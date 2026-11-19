@@ -87,7 +87,7 @@ async def _run_check(w: dict) -> dict:
     r = await bms_mod.check(
         client, event_code=w["event_code"], city=w["city"], slug=w["slug"], theatre=w["theatre"],
         dates=w["dates"], periods=w["periods"], region=w["region"],
-        max_dates=int(s.get("max_dates") or 5), browser_fallback=s.get("browser_fallback", "1") == "1",
+        max_dates=int(s.get("max_dates") or 10), browser_fallback=s.get("browser_fallback", "1") == "1",
         headless=s.get("headless", "1") == "1",
     )
     prev_status, old_state = w["status"], w["state"]
@@ -105,6 +105,12 @@ async def _run_check(w: dict) -> dict:
         db.log_event(w["id"], level, f"{w['title']}: {prev_status} → {r.status}. {r.detail}")
 
     if r.status in ("open", "not_open"):
+        # dates still open but not fetched this time (scan limit): keep what we knew, so their shows
+        # don't vanish now and come back later as false "new show" alerts
+        still_open = {d["date_code"] for d in r.dates if d["status"] == "BOOKABLE"}
+        for k, v in (old_state.get("shows") or {}).items():
+            if v.get("date") in still_open and v.get("date") not in set(r.scanned):
+                r.state.setdefault("shows", {}).setdefault(k, v)
         changes = parse.detect_changes(old_state, r.state)
         first_open = r.status == "open" and not old_state.get("shows")
         if first_open or (changes and r.status == "open"):

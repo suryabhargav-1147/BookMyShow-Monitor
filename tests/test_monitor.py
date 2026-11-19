@@ -106,3 +106,37 @@ def test_next_check_drives_due():
     assert not monitor.is_due(w)  # scheduled time not reached, even though interval passed
     w["next_check"] = (now - timedelta(seconds=1)).isoformat()
     assert monitor.is_due(w)
+
+
+def test_scans_all_open_dates_and_no_false_new_show(monkeypatch):
+    """6 open dates: all get fetched (default limit 10); a date skipped later keeps its known shows."""
+    calls = []
+
+    def day(d):
+        return fx.payload([(f"202612{x}", "date-selected") for x in range(17, 23)],
+                          [fx.venue("RADM", "Radiance Cinema: Koodal Nagar, Madurai",
+                                    [fx.show("07:00 PM", "1900", f"s{d}", f"202612{d}", [("GOLD", "200", "3")])])])
+
+    class PerDate(FakeBms):
+        async def showtimes(self, event_code, date_code, city, **kw):
+            calls.append(date_code)
+            return bms.Fetched(day(int(date_code[-2:]) if date_code else 17), "http")
+
+    sent = []
+
+    async def fake_send(title, body_html, body_plain, url=""):
+        sent.append(body_plain)
+        return {}
+
+    monkeypatch.setattr(notify, "send_all", fake_send)
+    monkeypatch.setattr(monitor, "client", PerDate([]))
+    wid = db.create_watch(title="T", city="madurai", slug="d", event_code="ET00526312", theatre="Radiance", interval_sec=300)
+    w = asyncio.run(monitor.run_check(db.get_watch(wid)))
+    assert sorted({s["date_code"] for s in w["last_result"]["shows"]}) == [f"202612{d}" for d in range(17, 23)]
+    assert "17–22 Dec" in w["summary"][0] and len(sent) == 1
+
+    db.save_settings({"max_dates": "3"})  # now only 3 dates fit: the rest must not look "new" next time
+    asyncio.run(monitor.run_check(db.get_watch(wid)))
+    db.save_settings({"max_dates": "10"})
+    w = asyncio.run(monitor.run_check(db.get_watch(wid)))
+    assert len(sent) == 1, sent  # no false "new show" alerts

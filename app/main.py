@@ -128,7 +128,7 @@ def public_settings() -> dict[str, Any]:
     out["ntfy_configured"] = bool(s.get("ntfy_topic"))
     out["headless"] = s["headless"] == "1"
     out["browser_fallback"] = s["browser_fallback"] == "1"
-    out["max_dates"] = int(s["max_dates"] or 5)
+    out["max_dates"] = int(s["max_dates"] or 10)
     out["jitter_sec"] = int(s.get("jitter_sec") or 0)
     out["api_token_required"] = bool(auth.API_TOKEN)
     out["telegram_bot_status"] = bot.status
@@ -291,7 +291,7 @@ async def run_sync(body: RunIn) -> dict:
     s = db.get_settings()
     r = await bms_mod.check(monitor.client, event_code=ref.event_code, city=ref.city, slug=ref.slug,
                             theatre=body.theatre, dates=body.dates, periods=body.periods, region=body.region,
-                            max_dates=int(s["max_dates"] or 5), browser_fallback=s["browser_fallback"] == "1",
+                            max_dates=int(s["max_dates"] or 10), browser_fallback=s["browser_fallback"] == "1",
                             headless=s["headless"] == "1")
     out = {k: v for k, v in r.__dict__.items() if k != "state"}
     out["movie"] = {"title": r.movie_name or ref.title, "event_code": ref.event_code, "city": ref.city, "url": ref.url}

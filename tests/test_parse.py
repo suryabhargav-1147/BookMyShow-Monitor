@@ -68,3 +68,14 @@ def test_change_detection():
     ch2 = parse.detect_changes(s1, s2)
     assert len(ch2) == 1 and "Back in stock" in ch2[0] and "10:45 AM" in ch2[0]
     assert parse.detect_changes({}, s1) == []
+
+
+def test_summary_flags_unchecked_dates():
+    r = {"dates": [{"date_code": f"202612{d}", "status": "BOOKABLE"} for d in range(17, 23)],
+         "shows": [{"date_code": f"202612{d}"} for d in range(17, 22)],
+         "scanned": [f"202612{d}" for d in range(17, 22)]}
+    lines = parse.date_summary(r, "Radiance")
+    assert lines[0] == "📅 Booking open: 17–22 Dec (at your theatre: 17–21 Dec)"
+    assert "Not checked this time: 22 Dec" in lines[1]
+    r["scanned"].append("20261222")
+    assert not any("Not checked" in x for x in parse.date_summary(r, "Radiance"))

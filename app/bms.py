@@ -194,12 +194,13 @@ class CheckResult:
     shows: list[dict] = field(default_factory=list)       # filtered shows (Show.to_dict)
     all_venues: list[str] = field(default_factory=list)   # every venue seen (helps pick a theatre)
     formats: list[str] = field(default_factory=list)      # other ET codes in the format picker
+    scanned: list[str] = field(default_factory=list)      # dates whose showtimes were actually fetched
     state: dict = field(default_factory=dict)
     booking_url: str = ""
 
 
 async def check(bms: Bms, *, event_code: str, city: str, slug: str = "", theatre: str = "", dates: str = "",
-                periods: str = "", region: str = "", max_dates: int = 5, browser_fallback: bool = True,
+                periods: str = "", region: str = "", max_dates: int = 10, browser_fallback: bool = True,
                 headless: bool = True) -> CheckResult:
     """Fetch the default date, then every other bookable date (capped), filter, and build state."""
     booking_url = f"{BASE}/movies/{city}/{slug or 'movie'}/buytickets/{event_code}"
@@ -216,6 +217,7 @@ async def check(bms: Bms, *, event_code: str, city: str, slug: str = "", theatre
     chips = parse.parse_dates(first.payload)
     shows = parse.parse_shows(first.payload)
     fetched_dates = {s.date_code for s in shows}
+    scanned = set(fetched_dates)
     wanted = {d.strip() for d in dates.split(",") if d.strip()}
     todo = [c.date_code for c in chips if c.status == "BOOKABLE" and c.date_code not in fetched_dates
             and (not wanted or c.date_code in wanted)]
@@ -224,6 +226,7 @@ async def check(bms: Bms, *, event_code: str, city: str, slug: str = "", theatre
             more = await bms.showtimes(event_code, dc, city, slug=slug, region=region,
                                        browser_fallback=browser_fallback, headless=headless)
             shows += parse.parse_shows(more.payload)
+            scanned.add(dc)
         except Exception as e:  # noqa: BLE001
             log.warning("date %s fetch failed: %s", dc, e)
         await asyncio.sleep(random.uniform(0.8, 2.5))
@@ -236,7 +239,7 @@ async def check(bms: Bms, *, event_code: str, city: str, slug: str = "", theatre
         shows=[s.to_dict() for s in filtered],
         all_venues=sorted({s.venue_name for s in shows}),
         formats=parse.parse_format_codes(first.payload, event_code),
-        state=parse.build_state(filtered, chips), booking_url=booking_url,
+        state=parse.build_state(filtered, chips), booking_url=booking_url, scanned=sorted(scanned),
     )
     venues = parse.group_by_venue(filtered)
     if filtered:

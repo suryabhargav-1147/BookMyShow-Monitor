@@ -57,7 +57,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "ntfy_topic": "",
     "headless": "1",
     "browser_fallback": "1",
-    "max_dates": "5",
+    "max_dates": "10",
     "default_city": "chennai",
     "jitter_sec": "30",
 }

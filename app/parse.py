@@ -398,12 +398,17 @@ def date_summary(result: dict, theatre: str = "", dates_filter: str = "") -> lis
     soon = [c["date_code"] for c in chips if c.get("status") == "NOT_OPEN"]
     at_theatre = sorted({s["date_code"] for s in result.get("shows") or [] if s.get("date_code")})
     wanted = [d for d in (dates_filter or "").split(",") if d]
+    scanned = result.get("scanned")
+    unchecked = [d for d in open_dates if scanned is not None and d not in scanned
+                 and (not wanted or d in wanted)]
     lines = []
     if open_dates:
         line = f"📅 Booking open: {date_ranges(open_dates)}"
         if theatre:
             line += f" (at your theatre: {date_ranges(at_theatre)})" if at_theatre else " (not at your theatre yet)"
         lines.append(line)
+        if unchecked:
+            lines.append(f"⚠️ Not checked this time: {date_ranges(unchecked)} (raise “dates to scan” in settings)")
     if wanted:
         waiting = [d for d in wanted if d not in at_theatre]
         lines.append(f"👀 Watching for: {date_ranges(waiting)}" if waiting else "✅ All your dates are open")
