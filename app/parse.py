@@ -337,3 +337,83 @@ def group_by_venue(shows: list[Show]) -> dict[str, list[Show]]:
     for s in shows:
         g.setdefault(s.venue_name, []).append(s)
     return g
+
+
+# ---------------------------------------------------------------- languages / formats (each is its own ET code)
+LANGUAGES = ["english", "tamil", "telugu", "hindi", "malayalam", "kannada", "bengali", "marathi", "punjabi", "gujarati"]
+PREMIUM = ("imax", "4dx", "msinfinity", "ms-infinity", "infinity", "screenx", "dolby", "epiq", "icon", "playhouse")
+
+
+def split_language(lang_str: str) -> tuple[str, str]:
+    """'English  •  MS-Infinity Vsn 3d' → ('English', 'MS-Infinity Vsn 3d')."""
+    parts = [p.strip() for p in re.split(r"[•·|]", lang_str or "") if p.strip()]
+    return (parts[0] if parts else ""), ", ".join(parts[1:])
+
+
+def language_in(text: str) -> str:
+    """A language named in a slug or query ('...-3dtamil', 'doomsday tamil') → 'Tamil', else ''."""
+    t = (text or "").lower()
+    return next((lang.title() for lang in LANGUAGES if lang in t), "")
+
+
+def format_rank(fmt: str) -> tuple[int, str]:
+    """Standard formats first: 2D, then 3D, then premium screens."""
+    f = (fmt or "").lower()
+    premium = any(k in f.replace(" ", "") for k in PREMIUM)
+    return (2 if premium else 1 if "3d" in f and "2d" not in f else 0), f
+
+
+# ---------------------------------------------------------------- human date summary
+_MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def date_ranges(codes: list[str]) -> str:
+    """['20261217','20261218','20261219','20261223'] → '17–19 Dec, 23 Dec'."""
+    from datetime import date, timedelta
+    ds = sorted({date(int(c[:4]), int(c[4:6]), int(c[6:8])) for c in codes if len(c) == 8 and c.isdigit()})
+    runs: list[list] = []
+    for d in ds:
+        if runs and d - runs[-1][-1] == timedelta(days=1):
+            runs[-1].append(d)
+        else:
+            runs.append([d])
+    out = []
+    for r in runs:
+        a, b = r[0], r[-1]
+        if a == b:
+            out.append(f"{a.day} {_MON[a.month - 1]}")
+        elif a.month == b.month:
+            out.append(f"{a.day}–{b.day} {_MON[a.month - 1]}")
+        else:
+            out.append(f"{a.day} {_MON[a.month - 1]} – {b.day} {_MON[b.month - 1]}")
+    return ", ".join(out)
+
+
+def date_summary(result: dict, theatre: str = "", dates_filter: str = "") -> list[str]:
+    """What's open and what we're still waiting for, from a check result.
+
+    → ['📅 Booking open: 17–20 Dec (at your theatre: 17, 18 Dec)', '👀 Watching for: 21 Dec onwards']"""
+    chips = result.get("dates") or []
+    open_dates = [c["date_code"] for c in chips if c.get("status") == "BOOKABLE"]
+    soon = [c["date_code"] for c in chips if c.get("status") == "NOT_OPEN"]
+    at_theatre = sorted({s["date_code"] for s in result.get("shows") or [] if s.get("date_code")})
+    wanted = [d for d in (dates_filter or "").split(",") if d]
+    lines = []
+    if open_dates:
+        line = f"📅 Booking open: {date_ranges(open_dates)}"
+        if theatre:
+            line += f" (at your theatre: {date_ranges(at_theatre)})" if at_theatre else " (not at your theatre yet)"
+        lines.append(line)
+    if wanted:
+        waiting = [d for d in wanted if d not in at_theatre]
+        lines.append(f"👀 Watching for: {date_ranges(waiting)}" if waiting else "✅ All your dates are open")
+    elif open_dates:
+        later = [d for d in soon if d > max(open_dates)]
+        if theatre and not at_theatre:
+            lines.append("👀 Watching for: your theatre to open any date")
+        else:
+            lines.append(f"👀 Watching for: {date_ranges(later[:1])} onwards (new dates)" if later
+                         else "👀 Watching for: new dates and freed-up seats")
+    else:
+        lines.append("👀 Watching for: booking to open (any date)")
+    return lines

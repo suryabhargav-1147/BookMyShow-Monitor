@@ -97,6 +97,9 @@ def _watch(row: sqlite3.Row) -> dict[str, Any]:
     d["active"] = bool(d["active"])
     for c in JSON_COLS:
         d[c] = json.loads(d.get(c) or "{}")
+    from .parse import date_summary  # local import: parse has no db dependency
+    d["summary"] = date_summary(d["last_result"], d["theatre"], d["dates"]) \
+        if d["status"] in ("open", "not_open") else []
     return d
 
 

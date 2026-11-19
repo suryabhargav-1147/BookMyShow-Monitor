@@ -47,6 +47,8 @@ def compose_alert(w: dict, r: bms_mod.CheckResult, changes: list[str], first_ope
         if r.language:
             lines.append(f"Version: {r.language}")
     lines += changes[:15]
+    res = {"dates": r.dates, "shows": r.shows}
+    lines += parse.date_summary(res, w.get("theatre", ""), w.get("dates", ""))
     if len(changes) > 15:
         lines.append(f"…and {len(changes) - 15} more")
     # compact current summary

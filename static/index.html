@@ -401,7 +401,7 @@ function renderWatches(){
       return `<tr>
         <td><div class="t-title">${esc(w.title)}</div><div class="sub mono">${esc(w.event_code)} · ${esc(w.city)}</div></td>
         <td class="hide-sm">${f}</td>
-        <td>${statusBadge(w)}<div class="sub" style="max-width:340px;margin-top:4px">${esc(w.status_detail)}</div></td>
+        <td>${statusBadge(w)}<div class="sub" style="max-width:340px;margin-top:4px">${esc(w.status_detail)}</div>${(w.summary||[]).map(l=>`<div class="sub" style="max-width:340px">${esc(l)}</div>`).join('')}</td>
         <td class="hide-sm"><span title="${esc(w.last_checked||'')}">${ago(w.last_checked)}</span><div class="sub">every ${Math.round(w.interval_sec/60*10)/10} min${settings.jitter_sec?` ±${settings.jitter_sec}s`:''}</div>${w.active && w.next_check ? `<div class="sub">next ${until(w.next_check)}</div>`:''}</td>
         <td><div class="actions">
           ${(w.last_result||{}).booking_url && w.status==='open' ? `<a class="btn sm primary" href="${esc(w.last_result.booking_url)}" target="_blank" rel="noopener">Book ↗</a>`:''}

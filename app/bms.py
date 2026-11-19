@@ -248,3 +248,56 @@ async def check(bms: Bms, *, event_code: str, city: str, slug: str = "", theatre
     else:
         res.detail = "Not open for booking yet"
     return res
+
+
+@dataclass
+class Variant:
+    event_code: str
+    name: str
+    language: str
+    fmt: str
+    slug: str
+
+    @property
+    def label(self) -> str:
+        return " · ".join(filter(None, [self.language, self.fmt])) or self.event_code
+
+    def ref(self, city: str) -> MovieRef:
+        title = f"{self.name} ({self.label})" if self.label != self.event_code else self.name
+        return MovieRef(title, city, self.slug, self.event_code)
+
+
+async def variants(bms: Bms, refs: list[MovieRef], city: str, region: str = "", limit: int = 8) -> list[Variant]:
+    """Every language/format version reachable from the search results: each found code, plus the
+    sibling codes in its format picker. One light request per version (capped), spaced out."""
+    queue = [(r.event_code, r.slug, r.title) for r in refs]
+    seen: set[str] = set()
+    out: list[Variant] = []
+    while queue and len(seen) < limit:
+        code, slug, title = queue.pop(0)
+        if code in seen:
+            continue
+        seen.add(code)
+        try:
+            f = await bms.showtimes(code, "", city, slug=slug, region=region, browser_fallback=False)
+        except Exception:  # noqa: BLE001
+            out.append(Variant(code, title, parse.language_in(slug), "", slug))
+            continue
+        info = parse.parse_movie_info(f.payload)
+        lang, fmt = parse.split_language(info["language"])
+        out.append(Variant(code, info["name"] or title, lang or parse.language_in(slug), fmt, slug))
+        for sib in parse.parse_format_codes(f.payload, code):
+            if sib not in seen:
+                queue.append((sib, slug, info["name"] or title))
+        await asyncio.sleep(random.uniform(0.6, 1.5))
+    return out
+
+
+def pick_default(vs: list[Variant], query: str = "") -> Variant | None:
+    """Language named in the query, else English, else the first; then the most standard format."""
+    if not vs:
+        return None
+    want = parse.language_in(query) or "English"
+    pool = [v for v in vs if v.language.lower() == want.lower()] or \
+        [v for v in vs if v.language.lower() == "english"] or vs
+    return sorted(pool, key=lambda v: parse.format_rank(v.fmt))[0]

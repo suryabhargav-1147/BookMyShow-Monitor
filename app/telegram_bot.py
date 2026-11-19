@@ -23,6 +23,7 @@ from typing import Any
 import httpx
 
 from . import auth, db, monitor, parse
+from .bms import Variant, pick_default, variants
 
 log = logging.getLogger("telegram-bot")
 ICON = {"open": "🟢", "not_open": "⚪", "blocked": "🟠", "error": "🔴", "pending": "⏳"}
@@ -196,10 +197,43 @@ class Bot:
             await self.ask_theatre(chat, ref)
             return
         found = await self.search(chat, city, text)
-        if found:
-            self.sessions[chat] = {"step": "pick", "cands": found[:6]}
-            buttons = [[{"text": f"{m.title} · {m.event_code}", "callback_data": f"pick:{i}"}] for i, m in enumerate(found[:6])]
-            await self.send(chat, "Which one?", buttons)
+        if not found:
+            return
+        vs = await self.find_variants(chat, found, city)
+        if len(vs) <= 1:
+            await self.ask_theatre(chat, (vs[0].ref(city) if vs else found[0]))
+            return
+        self.sessions[chat] = {"step": "lang", "variants": vs, "city": city, "query": text}
+        await self.ask_language(chat)
+
+    async def find_variants(self, chat: str, found: list[parse.MovieRef], city: str) -> list[Variant]:
+        await self.send(chat, "🌐 Looking up languages and formats…")
+        return await variants(monitor.client, found[:4], city)
+
+    async def ask_language(self, chat: str) -> None:
+        sess = self.sessions[chat]
+        vs: list[Variant] = sess["variants"]
+        langs = sorted({v.language or "Other" for v in vs}, key=lambda l: (l.lower() != "english", l))
+        sess["langs"] = langs
+        default = parse.language_in(sess.get("query", "")) or "English"
+        if len(langs) == 1:
+            await self.ask_format(chat, langs[0])
+            return
+        rows = [[{"text": l + (" ⭐ default" if l.lower() == default.lower() else ""), "callback_data": f"lang:{i}"}]
+                for i, l in enumerate(langs)]
+        await self.send(chat, f"🎬 <b>{html.escape(vs[0].name)}</b>\n🗣 Which language?", rows)
+
+    async def ask_format(self, chat: str, lang: str) -> None:
+        sess = self.sessions[chat]
+        pool = sorted([v for v in sess["variants"] if (v.language or "Other") == lang],
+                      key=lambda v: parse.format_rank(v.fmt))
+        sess.update(step="fmt", pool=pool)
+        if len(pool) == 1:
+            await self.ask_theatre(chat, pool[0].ref(sess["city"]))
+            return
+        rows = [[{"text": (v.fmt or "Standard") + (" ⭐ default" if i == 0 else ""), "callback_data": f"fmt:{i}"}]
+                for i, v in enumerate(pool)]
+        await self.send(chat, f"🗣 {html.escape(lang)}\n🎞 Which format?", rows)
 
     async def search(self, chat: str, city: str, text: str) -> list[parse.MovieRef]:
         await self.send(chat, f"🔎 Searching BookMyShow {html.escape(city)} for “{html.escape(text)}”…")
@@ -224,14 +258,27 @@ class Bot:
             interval = monitor.MIN_INTERVAL
         ref = parse.parse_movie_input(movie, city)
         if not ref:
-            found = await self.search(chat, city, movie)
-            if not found:
+            ref = await self.default_version(chat, city, movie)
+            if not ref:
                 return
-            ref = found[0]
         ref.city = city
         if warn:
             await self.send(chat, warn)
         await self.create(chat, ref, theatre, interval, region)
+
+    async def default_version(self, chat: str, city: str, query: str) -> parse.MovieRef | None:
+        """Search by name and take English (or the language named in the query), standard format."""
+        found = await self.search(chat, city, query)
+        if not found:
+            return None
+        vs = await self.find_variants(chat, found, city)
+        v = pick_default(vs, query)
+        if not v:
+            return found[0]
+        others = len(vs) - 1
+        await self.send(chat, f"🎞 Using <b>{html.escape(v.label)}</b>"
+                              + (f" ({others} other version(s): use ✏️ Edit → 🎬 Movie, or add by name step by step)" if others else ""))
+        return v.ref(city)
 
     async def ask_theatre(self, chat: str, ref: parse.MovieRef, region: str = "") -> None:
         self.sessions[chat] = {"step": "theatre", "ref": ref, "region": region}
@@ -309,6 +356,8 @@ class Bot:
                 w.get("dates") and "📅 " + ", ".join(parse.fmt_date(d) for d in w["dates"].split(",")),
                 w.get("periods") and "🕑 " + w["periods"].replace(",", ", ")])))
         lines.append(f"{STATUS.get(w['status'], w['status'])}: {html.escape(w['status_detail'])}")
+        if r.get("dates") is not None and w["status"] in ("open", "not_open"):
+            lines += [html.escape(x) for x in parse.date_summary(r, w["theatre"], w.get("dates", ""))]
         if w["status"] == "open" and r.get("booking_url"):
             lines.append(f'<a href="{html.escape(r["booking_url"])}">Book on BookMyShow →</a>')
         return "\n".join(lines)
@@ -387,12 +436,9 @@ class Bot:
                 return
             await self.apply(chat, wid, True, dates=dates)
         elif field == "mv":
-            ref = parse.parse_movie_input(text, w["city"])
+            ref = parse.parse_movie_input(text, w["city"]) or await self.default_version(chat, w["city"], text)
             if not ref:
-                found = await self.search(chat, w["city"], text)
-                if not found:
-                    return
-                ref = found[0]
+                return
             await self.apply(chat, wid, True, title=ref.title, slug=ref.slug, event_code=ref.event_code)
         elif field == "iv":
             m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(m|min|mins|minutes)?\s*", text.lower())
@@ -419,7 +465,7 @@ class Bot:
                                   "Send words from the theatre name" + (", or pick one showing it now:" if venues else ":"), rows)
         else:
             prompts = {"ci": f"📍 Now <b>{html.escape(w['city'].title())}</b>. Send the city, e.g. <code>madurai</code>.",
-                       "mv": "🎬 Send the movie name or its BookMyShow link.",
+                       "mv": "🎬 Send the movie name (add a language for a dub, e.g. <code>doomsday tamil</code>) or its BookMyShow link.",
                        "dt": "📅 Send dates (e.g. <code>18 dec, 19 dec</code>), or <code>any</code> for all dates."}
             self.sessions[chat] = {"step": "edit", "wid": i, "field": field}
             await self.send(chat, prompts[field])
@@ -434,6 +480,16 @@ class Bot:
                 await self.ask_theatre(chat, cands[int(parts[1])])
             else:
                 await self.send(chat, "That list expired; send the movie name again.")
+            return
+        if kind in ("lang", "fmt"):
+            sess = self.sessions.get(chat) or {}
+            idx = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else -1
+            if kind == "lang" and sess.get("step") == "lang" and 0 <= idx < len(sess.get("langs", [])):
+                await self.ask_format(chat, sess["langs"][idx])
+            elif kind == "fmt" and sess.get("step") == "fmt" and 0 <= idx < len(sess.get("pool", [])):
+                await self.ask_theatre(chat, sess["pool"][idx].ref(sess["city"]))
+            else:
+                await self.send(chat, "That choice expired; send the movie name again.")
             return
         if kind == "th":
             await self.on_theatre(chat, "")

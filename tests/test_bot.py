@@ -3,7 +3,13 @@ import asyncio
 from datetime import date
 
 from app import db, monitor, parse
+from app import telegram_bot as tb
+from app.bms import Variant
 from app.telegram_bot import Bot, parse_dates_text
+
+VARIANTS = [Variant("ET00526312", "Avengers: Doomsday", "Tamil", "MS-Infinity Vsn 3d", "avengers-doomsday-msinfinity-vsn-3dtamil"),
+            Variant("ET00526306", "Avengers: Doomsday", "English", "MS-Infinity Vsn 3d", "avengers-doomsday-msinfinity-vsn-3d"),
+            Variant("ET00439706", "Avengers: Doomsday", "English", "2D, 3D", "avengers-doomsday")]
 
 OWNER = "111222333"
 
@@ -30,6 +36,11 @@ def make_bot(monkeypatch):
     monkeypatch.setattr(b, "api", api)
     monkeypatch.setattr(monitor, "run_check", run_check)
     monkeypatch.setattr(monitor.client, "search_movies", search_movies)
+
+    async def fake_variants(bms, refs, city, region="", limit=8):
+        return list(VARIANTS)
+
+    monkeypatch.setattr(tb, "variants", fake_variants)
     db.save_settings({"telegram_chat_id": OWNER, "telegram_bot_token": "x", "default_city": "chennai"})
     for w in db.list_watches():
         db.delete_watch(w["id"])
@@ -71,11 +82,37 @@ def test_add_flow_with_city_and_timing(monkeypatch):
     assert {"chk:%d" % w["id"], "edit:%d" % w["id"], "tog:%d" % w["id"], "del:%d" % w["id"]} <= set(buttons(sent[-1]))
 
 
+def test_name_search_asks_language_then_format(monkeypatch):
+    b, sent, checks = make_bot(monkeypatch)
+    run = lambda u: asyncio.run(b.handle(u))  # noqa: E731
+    run(msg(OWNER, "doomsday"))
+    assert "Which language" in sent[-1][1]
+    labels = [bt["text"] for row in sent[-1][2]["inline_keyboard"] for bt in row]
+    assert labels[0] == "English ⭐ default" and "Tamil" in labels
+    run(btn(OWNER, "lang:0"))
+    assert "Which format" in sent[-1][1]
+    fl = [bt["text"] for row in sent[-1][2]["inline_keyboard"] for bt in row]
+    assert fl[0] == "2D, 3D ⭐ default"  # standard before premium
+    run(btn(OWNER, "fmt:0"))
+    assert "Which theatre" in sent[-1][1] and "English · 2D, 3D" in sent[-1][1]
+    run(msg(OWNER, "PVR Grand Mall Velachery"))
+    run(btn(OWNER, "ni:180"))
+    w = db.list_watches()[0]
+    assert w["event_code"] == "ET00439706" and w["title"] == "Avengers: Doomsday (English · 2D, 3D)"
+
+    run(msg(OWNER, "doomsday"))
+    run(btn(OWNER, "lang:1"))  # Tamil: only one format → straight to theatre
+    assert "Which theatre" in sent[-1][1] and "Tamil" in sent[-1][1]
+
+
 def test_one_line_add(monkeypatch):
     b, sent, checks = make_bot(monkeypatch)
     asyncio.run(b.handle(msg(OWNER, "/add doomsday | madurai | radials | 5")))
     w = db.list_watches()[0]
     assert (w["city"], w["theatre"], w["interval_sec"]) == ("madurai", "radials", 300)
+    assert w["event_code"] == "ET00439706"  # English, standard by default
+    asyncio.run(b.handle(msg(OWNER, "/add doomsday tamil | madurai | radials | 5")))
+    assert db.list_watches()[0]["event_code"] == "ET00526312"
     # unknown city → warning, region override accepted
     asyncio.run(b.handle(msg(OWNER, "/add ET00439706 | salem SALM | any | 10")))
     w2 = db.list_watches()[0]
@@ -123,6 +160,9 @@ def test_edit_everything(monkeypatch):
     run(btn(OWNER, f"e:{wid}:mv"))
     run(msg(OWNER, "https://in.bookmyshow.com/movies/madurai/avengers-doomsday-msinfinity-vsn-3d/ET00526306"))
     assert db.get_watch(wid)["event_code"] == "ET00526306"
+    run(btn(OWNER, f"e:{wid}:mv"))
+    run(msg(OWNER, "doomsday"))
+    assert db.get_watch(wid)["event_code"] == "ET00439706"  # by name → English standard
 
     run(btn(OWNER, f"tog:{wid}"))
     assert db.get_watch(wid)["active"] is False and "paused" in sent[-1][1]
@@ -141,3 +181,16 @@ def test_parse_dates_text():
     assert parse_dates_text("any", today) == ""
     assert parse_dates_text("tomorrow-ish", today) is None
     assert parse_dates_text("31/02", today) is None
+
+
+def test_card_shows_date_summary(monkeypatch):
+    b, sent, checks = make_bot(monkeypatch)
+    wid = db.create_watch(title="D", city="chennai", slug="d", event_code="ET00439706", theatre="PVR Nexus", interval_sec=180)
+    db.update_watch(wid, status="open", status_detail="2 shows", last_result={
+        "dates": [{"date_code": "20261217", "status": "BOOKABLE"}, {"date_code": "20261218", "status": "BOOKABLE"},
+                  {"date_code": "20261219", "status": "BOOKABLE"}, {"date_code": "20261220", "status": "NOT_OPEN"}],
+        "shows": [{"date_code": "20261217"}, {"date_code": "20261218"}]})
+    text = b.describe(db.get_watch(wid))
+    assert "Booking open: 17–19 Dec (at your theatre: 17–18 Dec)" in text
+    assert "Watching for: 20 Dec onwards" in text
+    assert db.get_watch(wid)["summary"][0].startswith("📅 Booking open")
