@@ -194,3 +194,24 @@ def test_card_shows_date_summary(monkeypatch):
     assert "Booking open: 17–19 Dec (at your theatre: 17–18 Dec)" in text
     assert "Watching for: 20 Dec onwards" in text
     assert db.get_watch(wid)["summary"][0].startswith("📅 Booking open")
+
+
+def test_single_language_skips_question(monkeypatch):
+    b, sent, checks = make_bot(monkeypatch)
+    only_en = [v for v in VARIANTS if v.language == "English"]
+
+    async def fake_variants(bms, refs, city, region="", limit=8):
+        return list(only_en)
+
+    monkeypatch.setattr(tb, "variants", fake_variants)
+    asyncio.run(b.handle(msg(OWNER, "doomsday")))
+    texts = [t for _, t, _ in sent]
+    assert not any("Which language" in t for t in texts)  # one language → used automatically
+    assert "Which format" in texts[-1]
+
+    async def one_version(bms, refs, city, region="", limit=8):
+        return [only_en[-1]]
+
+    monkeypatch.setattr(tb, "variants", one_version)
+    asyncio.run(b.handle(msg(OWNER, "doomsday")))
+    assert "Which theatre" in sent[-1][1]  # one version → straight to theatre
