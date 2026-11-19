@@ -31,7 +31,8 @@ def broadcast(kind: str, payload: dict[str, Any]) -> None:
             pass
 
 
-async def telegram(text: str, settings: dict[str, str] | None = None) -> tuple[bool, str]:
+async def telegram(text: str, settings: dict[str, str] | None = None, url: str = "",
+                   button: str = "🎟 Book now") -> tuple[bool, str]:
     s = settings or db.get_settings()
     token = s.get("telegram_bot_token", "").strip()
     chats = [c.strip() for c in s.get("telegram_chat_id", "").replace(";", ",").split(",") if c.strip()]
@@ -40,9 +41,11 @@ async def telegram(text: str, settings: dict[str, str] | None = None) -> tuple[b
     results = []
     async with httpx.AsyncClient(timeout=15) as c:
         for i, chat in enumerate(chats, 1):  # several user IDs: comma-separated
-            r = await c.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                             json={"chat_id": chat, "text": text, "parse_mode": "HTML",
-                                   "disable_web_page_preview": True})
+            payload: dict[str, Any] = {"chat_id": chat, "text": text, "parse_mode": "HTML",
+                                       "disable_web_page_preview": True}
+            if url:
+                payload["reply_markup"] = {"inline_keyboard": [[{"text": button, "url": url}]]}
+            r = await c.post(f"https://api.telegram.org/bot{token}/sendMessage", json=payload)
             ok = r.status_code == 200 and r.json().get("ok")
             # never echo chat IDs (they'd show in public CI logs); refer to them by position
             results.append((ok, f"#{i} sent" if ok else f"#{i} failed: {r.json().get('description', r.status_code)}"))
@@ -81,12 +84,12 @@ async def ntfy(title: str, body: str, url: str = "", settings: dict[str, str] | 
 
 
 async def send_all(title: str, body_html: str, body_plain: str, url: str = "") -> dict[str, str]:
+    """body_html is the complete Telegram message (it carries its own heading)."""
     s = db.get_settings()
     out: dict[str, str] = {}
     broadcast("alert", {"title": title, "body": body_plain, "url": url})
     out["dashboard"] = "sent"
-    for name, coro in (("telegram", telegram(f"<b>{title}</b>\n{body_html}" + (f'\n<a href="{url}">Book now →</a>' if url else ""), s)),
-                       ("ntfy", ntfy(title, body_plain, url, s))):
+    for name, coro in (("telegram", telegram(body_html, s, url)), ("ntfy", ntfy(title, body_plain, url, s))):
         try:
             ok, info = await coro
             out[name] = info

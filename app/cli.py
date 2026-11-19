@@ -103,11 +103,11 @@ async def main_async(a: argparse.Namespace) -> int:
                 "ntfy_topic": a.ntfy_topic, "ntfy_server": a.ntfy_server or "https://ntfy.sh"}
     alerts = 0
 
-    async def send(title: str, plain: str, url: str) -> None:
+    async def send(title: str, plain: str, url: str, body_html: str = "") -> None:
         nonlocal alerts
         sent = []
-        for name, coro in (("telegram", notify.telegram(f"<b>{html.escape(title)}</b>\n{html.escape(plain)}"
-                                                         + (f'\n<a href="{url}">Book now →</a>' if url else ""), settings)),
+        tg_text = body_html or f"<b>{html.escape(title)}</b>\n{html.escape(plain)}"
+        for name, coro in (("telegram", notify.telegram(tg_text, settings, url)),
                            ("ntfy", notify.ntfy(title, plain, url, settings))):
             try:
                 ok, info = await coro
@@ -118,13 +118,13 @@ async def main_async(a: argparse.Namespace) -> int:
         print(f"  ALERT → {title} | " + " | ".join(sent))
 
     if r.status in ("open", "not_open"):
-        changes = parse.detect_changes(old_state, r.state)
+        changes = parse.detect_change_items(old_state, r.state)
         first_open = r.status == "open" and not old_state.get("shows")
         if first_open or (changes and r.status == "open"):
             from .monitor import compose_alert  # reuse the dashboard's message format
             w = {"title": movie, "theatre": a.theatre, "city": ref.city}
-            title, _, plain = compose_alert(w, r, changes, first_open)
-            await send(title, plain, r.booking_url)
+            title, body_html, plain = compose_alert(w, r, changes, first_open)
+            await send(title, plain, r.booking_url, body_html)
         new_state = r.state
     else:
         new_state = old_state  # keep the last good state through blocks/errors

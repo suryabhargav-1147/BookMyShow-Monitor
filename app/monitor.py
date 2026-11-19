@@ -8,7 +8,7 @@ import random
 from datetime import datetime, timedelta, timezone
 
 from . import bms as bms_mod
-from . import db, notify, parse
+from . import db, messages, notify, parse
 
 log = logging.getLogger("monitor")
 MIN_INTERVAL = 60
@@ -36,32 +36,9 @@ def is_due(w: dict) -> bool:
     return (now - last).total_seconds() >= max(MIN_INTERVAL, int(w["interval_sec"]))
 
 
-def compose_alert(w: dict, r: bms_mod.CheckResult, changes: list[str], first_open: bool) -> tuple[str, str, str]:
-    name = r.movie_name or w["title"]
-    title = f"🎟️ {name}: tickets open!" if first_open else f"🎬 {name}: {len(changes)} update(s)"
-    venues = list(dict.fromkeys(sh["venue_name"] for sh in r.shows))
-    lines: list[str] = []
-    if first_open:
-        at = ", ".join(venues[:3]) + (f" +{len(venues) - 3} more" if len(venues) > 3 else "")
-        lines.append(f"Booking is live at {at}." if venues else f"Booking is live in {w['city'].title()}.")
-        if r.language:
-            lines.append(f"Version: {r.language}")
-    lines += changes[:15]
-    res = {"dates": r.dates, "shows": r.shows}
-    lines += parse.date_summary(res, w.get("theatre", ""), w.get("dates", ""))
-    if len(changes) > 15:
-        lines.append(f"…and {len(changes) - 15} more")
-    # compact current summary
-    by_venue: dict[str, list[str]] = {}
-    for s in r.shows:
-        tag = "" if s["available"] else " (full)"
-        by_venue.setdefault(s["venue_name"], []).append(f"{parse.fmt_date(s['date_code'])} {s['time']}{tag}")
-    if by_venue:
-        lines.append("")
-        for v, times in list(by_venue.items())[:5]:
-            lines.append(f"📍 {v}: " + ", ".join(times[:8]) + (" …" if len(times) > 8 else ""))
-    plain = "\n".join(lines)
-    return title, html.escape(plain), plain
+def compose_alert(w: dict, r: bms_mod.CheckResult, changes: list[dict], first_open: bool) -> tuple[str, str, str]:
+    """(title, telegram html, plain text). See app/messages.py for the layout."""
+    return messages.alert(w, r, changes, first_open)
 
 
 _locks: dict[int, asyncio.Lock] = {}
@@ -111,7 +88,7 @@ async def _run_check(w: dict) -> dict:
         for k, v in (old_state.get("shows") or {}).items():
             if v.get("date") in still_open and v.get("date") not in set(r.scanned):
                 r.state.setdefault("shows", {}).setdefault(k, v)
-        changes = parse.detect_changes(old_state, r.state)
+        changes = parse.detect_change_items(old_state, r.state)
         first_open = r.status == "open" and not old_state.get("shows")
         if first_open or (changes and r.status == "open"):
             title, body_html, body_plain = compose_alert(w, r, changes, first_open)

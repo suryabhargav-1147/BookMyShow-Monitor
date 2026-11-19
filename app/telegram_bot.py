@@ -22,12 +22,10 @@ from typing import Any
 
 import httpx
 
-from . import auth, db, monitor, parse
+from . import auth, db, messages, monitor, parse
 from .bms import Variant, pick_default, variants
 
 log = logging.getLogger("telegram-bot")
-ICON = {"open": "🟢", "not_open": "⚪", "blocked": "🟠", "error": "🔴", "pending": "⏳"}
-STATUS = {"open": "Open", "not_open": "Not open yet", "blocked": "Blocked", "error": "Error", "pending": "Not checked yet"}
 HELP = (
     "🎟️ <b>BookMyShow Monitor</b>\n\n"
     "Send a <b>movie name</b> or a <b>BookMyShow link</b> to start watching it, "
@@ -347,23 +345,12 @@ class Bot:
         return f"every {m:g} min" + (f" (±{jit}s)" if jit else "")
 
     def describe(self, w: dict) -> str:
-        r = w.get("last_result") or {}
-        lines = [f"{ICON.get(w['status'], '')} <b>{html.escape(w['title'])}</b> #{w['id']}",
-                 f"🏛️ {html.escape(w['theatre'] or 'any theatre')} · 📍 {html.escape(w['city'].title())}",
-                 f"⏱ {self.every(w['interval_sec'])}" + ("" if w["active"] else " · ⏸ paused")]
-        if w.get("dates") or w.get("periods"):
-            lines.append(" · ".join(filter(None, [
-                w.get("dates") and "📅 " + ", ".join(parse.fmt_date(d) for d in w["dates"].split(",")),
-                w.get("periods") and "🕑 " + w["periods"].replace(",", ", ")])))
-        lines.append(f"{STATUS.get(w['status'], w['status'])}: {html.escape(w['status_detail'])}")
-        if r.get("dates") is not None and w["status"] in ("open", "not_open"):
-            lines += [html.escape(x) for x in parse.date_summary(r, w["theatre"], w.get("dates", ""))]
-        if w["status"] == "open" and r.get("booking_url"):
-            lines.append(f'<a href="{html.escape(r["booking_url"])}">Book on BookMyShow →</a>')
-        return "\n".join(lines)
+        return messages.card(w, int(db.get_settings().get("jitter_sec") or 0))
 
     def watch_buttons(self, w: dict) -> Markup:
-        return [[{"text": "🔄 Check", "callback_data": f"chk:{w['id']}"},
+        url = (w.get("last_result") or {}).get("booking_url")
+        book = [[{"text": "🎟 Book on BookMyShow", "url": url}]] if w["status"] == "open" and url else []
+        return book + [[{"text": "🔄 Check", "callback_data": f"chk:{w['id']}"},
                  {"text": "✏️ Edit", "callback_data": f"edit:{w['id']}"}],
                 [{"text": "⏸ Pause" if w["active"] else "▶️ Resume", "callback_data": f"tog:{w['id']}"},
                  {"text": "🗑 Delete", "callback_data": f"del:{w['id']}"}]]
@@ -534,7 +521,11 @@ class Bot:
             await self.send(chat, f"🗑 Deleted <b>{html.escape(w['title'])}</b> @ {html.escape(w['theatre'] or 'any theatre')}.")
         elif kind == "edit":
             self.sessions.pop(chat, None)
-            await self.send(chat, "✏️ What do you want to change?\n\n" + self.describe(w), self.edit_buttons(w))
+            name, version = messages.movie_and_version(w)
+            await self.send(chat, f"✏️ <b>Edit #{wid}</b> · {html.escape(name)}"
+                                  + (f"\n<i>{html.escape(version)}</i>" if version else "")
+                                  + f"\n📍 {html.escape(w['theatre'] or 'Any theatre')} · {html.escape(w['city'].title())}"
+                                  "\n\nWhat do you want to change?", self.edit_buttons(w))
         elif kind == "done":
             self.sessions.pop(chat, None)
             await self.send(chat, self.describe(w), self.watch_buttons(w))

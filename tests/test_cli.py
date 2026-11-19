@@ -18,7 +18,7 @@ def test_cli_flow(tmp_path, monkeypatch, capsys):
         async def aclose(self):
             pass
 
-    async def tg(text, settings=None):
+    async def tg(text, settings=None, url="", **kw):
         sent.append(text)
         return True, "sent"
 
@@ -50,7 +50,7 @@ def test_cli_flow(tmp_path, monkeypatch, capsys):
 
     current["p"] = fx.OPEN_PHOENIX
     run()
-    assert len(sent) == 1 and "tickets open" in sent[0] and "Phoenix MarketCity" in sent[0]
+    assert len(sent) == 1 and "TICKETS OPEN" in sent[0] and "Phoenix MarketCity" in sent[0]
     run()
     assert len(sent) == 1  # no duplicate
     assert "Phoenix MarketCity" in capsys.readouterr().out

@@ -300,32 +300,49 @@ def build_state(shows: list[Show], dates: list[DateChip]) -> dict:
     return {"shows": st, "dates": {d.date_code: d.status for d in dates}}
 
 
-def detect_changes(old: dict, new: dict) -> list[str]:
-    """Human-readable changes. An empty `old` (first check) reports nothing here;
-    the monitor handles the first-check 'already open' alert itself."""
+def detect_change_items(old: dict, new: dict) -> list[dict]:
+    """Structured changes since the previous check. An empty `old` (first check) reports nothing;
+    the monitor sends the first-opening alert itself.
+
+    kinds: date (a date became bookable), new (a show appeared), back (sold out → seats again)."""
     if not old:
         return []
-    changes: list[str] = []
+    items: list[dict] = []
     od, nd = old.get("dates", {}), new.get("dates", {})
-    for dc, status in sorted(nd.items()):
-        if status == "BOOKABLE" and od.get(dc) in ("NOT_OPEN", None) and od:
-            changes.append(f"📅 Date opened: {fmt_date(dc)}")
+    if od:
+        for dc, status in sorted(nd.items()):
+            if status == "BOOKABLE" and od.get(dc) in ("NOT_OPEN", None):
+                items.append({"kind": "date", "date": dc})
     os_, ns = old.get("shows", {}), new.get("shows", {})
     seen_sessions = set()
     for key in sorted(set(ns) - set(os_)):
-        s = ns[key]
         sess = key.rsplit("|", 1)[0]
-        if sess in seen_sessions:
-            continue
+        if sess in seen_sessions or any(k.rsplit("|", 1)[0] == sess for k in os_):
+            continue  # one item per show, and a new seat class on a known show isn't a new show
         seen_sessions.add(sess)
-        attr = f" [{s['attr']}]" if s.get("attr") else ""
-        changes.append(f"🆕 New show: {s['venue']}, {fmt_date(s['date'])} {s['time']}{attr}")
-    for key, s in ns.items():
+        v = ns[key]
+        items.append({"kind": "new", "venue": v["venue"], "date": v["date"], "time": v["time"], "attr": v.get("attr", "")})
+    for key, v in ns.items():
         o = os_.get(key)
-        if o and o["status"] == "0" and s["status"] != "0":
-            changes.append(f"🟢 Back in stock: {s['venue']}, {fmt_date(s['date'])} {s['time']}: "
-                           f"{s['cat']} → {AVAIL.get(s['status'], '?')}")
-    return changes
+        if o and o["status"] == "0" and v["status"] != "0":
+            items.append({"kind": "back", "venue": v["venue"], "date": v["date"], "time": v["time"],
+                          "cat": v["cat"], "status": v["status"]})
+    return items
+
+
+def detect_changes(old: dict, new: dict) -> list[str]:
+    """Same as detect_change_items, as one readable line per change."""
+    out = []
+    for c in detect_change_items(old, new):
+        if c["kind"] == "date":
+            out.append(f"📅 Date opened: {fmt_date(c['date'])}")
+        elif c["kind"] == "new":
+            attr = f" [{c['attr']}]" if c.get("attr") else ""
+            out.append(f"🆕 New show: {c['venue']}, {fmt_date(c['date'])} {c['time']}{attr}")
+        else:
+            out.append(f"🟢 Back in stock: {c['venue']}, {fmt_date(c['date'])} {c['time']}: "
+                       f"{c['cat']} → {AVAIL.get(c['status'], '?')}")
+    return out
 
 
 def fmt_date(d: str) -> str:

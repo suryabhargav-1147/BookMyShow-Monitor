@@ -193,6 +193,7 @@ def test_card_shows_date_summary(monkeypatch):
     text = b.describe(db.get_watch(wid))
     assert "Booking open: 17–19 Dec (at your theatre: 17–18 Dec)" in text
     assert "Watching for: 20 Dec onwards" in text
+    assert "🎯 PVR Nexus · Chennai" in text and "<code>#%d</code>" % wid in text
     assert db.get_watch(wid)["summary"][0].startswith("📅 Booking open")
 
 

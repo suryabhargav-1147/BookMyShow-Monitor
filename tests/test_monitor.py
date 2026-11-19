@@ -44,7 +44,7 @@ def test_alert_flow(monkeypatch):
     fake.payloads = [fx.OPEN_PHOENIX]  # theatre opens -> one alert
     w = run()
     assert w["status"] == "open" and len(sent) == 1
-    assert "tickets open" in sent[0][0] and "Phoenix MarketCity" in sent[0][1]
+    assert "Tickets open" in sent[0][0] and "Phoenix MarketCity" in sent[0][1]
     assert w["alerts_sent"] == 1 and len(w["last_result"]["shows"]) == 2
 
     w = run()  # unchanged -> no duplicate alert
@@ -85,7 +85,8 @@ def test_concurrent_checks_alert_once(monkeypatch):
 
     asyncio.run(both())
     assert len(sent) == 1
-    assert "Booking is live at PVR: Phoenix MarketCity, Velachery" in sent[0]
+    assert "TICKETS OPEN" in sent[0] and "📍 PVR · Phoenix MarketCity, Velachery" in sent[0]
+    assert "Fri 18 Dec  10:45 AM · 7:30 PM" in sent[0]  # one line per date, times in order
     assert db.get_watch(wid)["checks"] == 2
 
 
