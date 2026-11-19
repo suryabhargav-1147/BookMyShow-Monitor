@@ -108,6 +108,8 @@ async def main_async(a: argparse.Namespace) -> int:
         new_state = r.state
     else:
         new_state = old_state  # keep the last good state through blocks/errors
+        if os.getenv("GITHUB_ACTIONS"):
+            r.detail = r.detail.split(". Turn off headless")[0] + " (from GitHub's servers)"
         if old_status not in ("blocked", "error") and r.status != old_status:
             await send(f"⚠️ BMS monitor {r.status}", f"{movie}: {r.detail}", "")
         print(f"::warning::{r.status}: {r.detail}")

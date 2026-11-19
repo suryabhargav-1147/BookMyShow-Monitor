@@ -32,6 +32,16 @@ jobs:
       - name: Install
         run: uv sync --frozen --no-dev
 
+      # Real-browser fallback for when Cloudflare challenges plain HTTP from GitHub's IPs
+      - name: Cache Playwright browser
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+
+      - name: Install Chromium
+        run: uv run --no-dev playwright install --with-deps chromium
+
       - name: Check BookMyShow
         env:
           BMS_MOVIE: ${{ vars.BMS_MOVIE }}
@@ -44,7 +54,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-        run: uv run --no-dev bms-check
+        run: uv run --no-dev bms-check --browser
 
       - name: Save state
         run: |

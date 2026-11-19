@@ -65,11 +65,13 @@ async def ntfy(title: str, body: str, url: str = "", settings: dict[str, str] | 
     if not topic:
         return False, "ntfy not configured"
     server = (s.get("ntfy_server") or "https://ntfy.sh").rstrip("/")
-    headers = {"Title": title.encode("utf-8").decode("latin-1", "ignore"), "Priority": "urgent", "Tags": "tickets"}
+    # JSON publishing keeps emoji/Unicode intact (HTTP headers must be ASCII)
+    msg: dict[str, Any] = {"topic": topic, "title": title, "message": body, "priority": 5, "tags": ["tickets"]}
     if url:
-        headers["Click"] = url
+        msg["click"] = url
+        msg["actions"] = [{"action": "view", "label": "Book now", "url": url}]
     async with httpx.AsyncClient(timeout=15) as c:
-        r = await c.post(f"{server}/{topic}", content=body.encode(), headers=headers)
+        r = await c.post(server, json=msg)
     return r.status_code < 300, "sent" if r.status_code < 300 else r.text[:300]
 
 
