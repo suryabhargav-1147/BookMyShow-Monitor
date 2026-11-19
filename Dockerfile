@@ -1,7 +1,7 @@
 # BMS Monitor: production image (dashboard + checker + Telegram bot).
 #   docker build -t bms-monitor .
-#   docker run -p 127.0.0.1:30030:8642 -v <data dir>:/data --env-file .env bms-monitor
-# Plain-HTTP checks only (no browser): small image. BookMyShow must accept the server's IP.
+#   docker run -p 127.0.0.1:8642:8642 -v <data dir>:/data --env-file .env bms-monitor
+# Plain-HTTP checks only (no browser). Run it on a home connection: BookMyShow blocks datacenter IPs.
 FROM python:3.12-slim
 COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /usr/local/bin/uv
 WORKDIR /app
