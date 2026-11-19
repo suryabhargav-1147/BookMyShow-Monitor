@@ -146,7 +146,7 @@ def rank_movies(links: list[dict], city: str, query: str, limit: int = 12) -> li
         ref = MovieRef(title_from_slug(slug), city, slug, code)
         if code not in best or score > best[code][0]:
             best[code] = (score, ref)
-    return [r for _, r in sorted(best.values(), key=lambda x: -x[0])][:limit]
+    return [r for _, r in sorted(best.values(), key=lambda x: (-x[0], len(x[1].slug)))][:limit]
 
 
 # ---------------------------------------------------------------- API response parsers

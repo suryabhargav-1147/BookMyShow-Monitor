@@ -27,10 +27,13 @@ def is_due(w: dict) -> bool:
 def compose_alert(w: dict, r: bms_mod.CheckResult, changes: list[str], first_open: bool) -> tuple[str, str, str]:
     name = r.movie_name or w["title"]
     title = f"🎟️ {name}: tickets open!" if first_open else f"🎬 {name}: {len(changes)} update(s)"
-    where = w["theatre"] or w["city"].title()
+    venues = list(dict.fromkeys(sh["venue_name"] for sh in r.shows))
     lines: list[str] = []
     if first_open:
-        lines.append(f"Booking is live for {where}.")
+        at = ", ".join(venues[:3]) + (f" +{len(venues) - 3} more" if len(venues) > 3 else "")
+        lines.append(f"Booking is live at {at}." if venues else f"Booking is live in {w['city'].title()}.")
+        if r.language:
+            lines.append(f"Version: {r.language}")
     lines += changes[:15]
     if len(changes) > 15:
         lines.append(f"…and {len(changes) - 15} more")
@@ -47,7 +50,24 @@ def compose_alert(w: dict, r: bms_mod.CheckResult, changes: list[str], first_ope
     return title, html.escape(plain), plain
 
 
+_locks: dict[int, asyncio.Lock] = {}
+
+
 async def run_check(w: dict) -> dict:
+    lock = _locks.setdefault(w["id"], asyncio.Lock())
+    async with lock:
+        fresh = db.get_watch(w["id"])
+        if not fresh:
+            return {}
+        return await _run_check(fresh)
+
+
+def is_checking(wid: int) -> bool:
+    lock = _locks.get(wid)
+    return bool(lock and lock.locked())
+
+
+async def _run_check(w: dict) -> dict:
     s = db.get_settings()
     notify.broadcast("checking", {"watch_id": w["id"]})
     r = await bms_mod.check(
@@ -89,7 +109,7 @@ async def loop() -> None:
     while True:
         try:
             for w in db.list_watches():
-                if is_due(w):
+                if is_due(w) and not is_checking(w["id"]):
                     await run_check(w)
                     await asyncio.sleep(random.uniform(2, 6))  # spread requests out
         except asyncio.CancelledError:

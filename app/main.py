@@ -300,6 +300,7 @@ def _free_port(host: str, start: int, tries: int = 20) -> int:
     import socket
     for port in range(start, start + tries):
         with socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 s.bind((host, port))
                 return port
@@ -314,13 +315,15 @@ def run() -> None:
     import uvicorn
     host = os.getenv("HOST", "127.0.0.1")
     wanted = int(os.getenv("PORT", DEFAULT_PORT))
-    port = _free_port(host, wanted)
+    # explicit PORT (e.g. the systemd service): use exactly that port, fail loudly if taken
+    port = wanted if os.getenv("PORT") else _free_port(host, wanted)
     if port != wanted:
         print(f"Port {wanted} is in use; using {port} instead.")
     shown = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     print(f"\n  BMS Monitor dashboard → http://{shown}:{port}\n")
     SERVER_FILE.write_text(json.dumps({"url": f"http://{shown}:{port}"}))  # lets bms-mcp find us
-    uvicorn.run("app.main:app", host=host, port=port)
+    # short graceful shutdown: open dashboard tabs hold a live event stream that would otherwise block stop
+    uvicorn.run("app.main:app", host=host, port=port, timeout_graceful_shutdown=3)
 
 
 if __name__ == "__main__":

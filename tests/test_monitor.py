@@ -59,3 +59,31 @@ def test_is_due():
     assert not monitor.is_due(w)
     w["active"] = False
     assert not monitor.is_due(w)
+
+
+def test_concurrent_checks_alert_once(monkeypatch):
+    """Bot's immediate check + scheduler check racing on a new watch must alert only once."""
+    sent = []
+
+    async def fake_send(title, body_html, body_plain, url=""):
+        sent.append(body_plain)
+        return {"dashboard": "sent"}
+
+    class SlowFake(FakeBms):
+        async def showtimes(self, *a, **k):
+            await asyncio.sleep(0.05)  # both checks in flight at once
+            return await super().showtimes(*a, **k)
+
+    monkeypatch.setattr(notify, "send_all", fake_send)
+    monkeypatch.setattr(monitor, "client", SlowFake([fx.OPEN_PHOENIX]))
+    wid = db.create_watch(title="X", city="chennai", slug="avengers-doomsday", event_code="ET00439706",
+                          theatre="PVR Phoenix Velachery", interval_sec=120)
+    w = db.get_watch(wid)
+
+    async def both():
+        await asyncio.gather(monitor.run_check(w), monitor.run_check(w))
+
+    asyncio.run(both())
+    assert len(sent) == 1
+    assert "Booking is live at PVR: Phoenix MarketCity, Velachery" in sent[0]
+    assert db.get_watch(wid)["checks"] == 2
