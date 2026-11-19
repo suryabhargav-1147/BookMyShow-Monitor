@@ -24,6 +24,22 @@ uv run bms-monitor                   # http://127.0.0.1:8642
 
 Not sure of the exact theatre name? Create the monitor without one, open **Details** once the city opens, and click a venue to use it as the filter.
 
+## Chat with the Telegram bot
+
+While `bms-monitor` runs, your bot also takes commands. Only the user IDs in your settings can use it.
+
+- Send a **movie name** or a **BookMyShow link**. It asks for the theatre (or "any theatre"), starts watching (checks every 2 min), and checks once right away.
+- `/list` shows your watches with 🔄 Check, ⏸ Pause and 🗑 Delete buttons.
+- `/check` checks everything now.
+- `/city mumbai` changes the default city.
+
+Run it as a service so it's always on (Linux):
+
+```bash
+systemctl --user enable --now bms-monitor   # unit file: ~/.config/systemd/user/bms-monitor.service
+journalctl --user -u bms-monitor -f        # logs
+```
+
 ## Run free on GitHub Actions (no PC needed)
 
 `.github/workflows/bms-monitor.yml` runs `bms-check` every 5 minutes. Each run:

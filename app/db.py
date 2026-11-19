@@ -57,6 +57,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "headless": "1",
     "browser_fallback": "1",
     "max_dates": "5",
+    "default_city": "chennai",
 }
 SECRET_SETTINGS = {"telegram_bot_token"}
 

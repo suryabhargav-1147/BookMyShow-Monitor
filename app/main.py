@@ -15,18 +15,24 @@ from pydantic import BaseModel, Field
 
 from . import bms as bms_mod
 from . import db, monitor, notify, parse
+from .telegram_bot import bot
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+# httpx logs full request URLs at INFO, and Telegram URLs contain the bot token
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 STATIC = Path(__file__).resolve().parent.parent / "static"
 API_TOKEN = os.getenv("BMS_API_TOKEN", "")
 
 
 @contextlib.asynccontextmanager
 async def lifespan(_: FastAPI):
-    task = None if os.getenv("BMS_DISABLE_MONITOR") == "1" else asyncio.create_task(monitor.loop())
+    tasks = [] if os.getenv("BMS_DISABLE_MONITOR") == "1" else [
+        asyncio.create_task(monitor.loop()), asyncio.create_task(bot.run())]
     yield
-    if task:
-        task.cancel()
+    for t in tasks:
+        t.cancel()
+    await bot.aclose()
     await monitor.client.aclose()
 
 
@@ -122,6 +128,7 @@ def public_settings() -> dict[str, Any]:
     out["browser_fallback"] = s["browser_fallback"] == "1"
     out["max_dates"] = int(s["max_dates"] or 5)
     out["api_token_required"] = bool(API_TOKEN)
+    out["telegram_bot_status"] = bot.status
     out["cities"] = sorted(k for k in parse.REGIONS if k not in ("delhi", "bangalore"))
     return out
 

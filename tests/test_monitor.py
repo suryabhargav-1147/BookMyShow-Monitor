@@ -1,12 +1,8 @@
 """End-to-end monitor flow with BookMyShow faked out (no network)."""
 import asyncio
-import os
-import tempfile
 
-os.environ["BMS_DATA_DIR"] = tempfile.mkdtemp()
-
-from app import bms, db, monitor, notify  # noqa: E402
-from tests import fixtures as fx  # noqa: E402
+from app import bms, db, monitor, notify
+from tests import fixtures as fx
 
 
 class FakeBms:
