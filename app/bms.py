@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -225,7 +226,7 @@ async def check(bms: Bms, *, event_code: str, city: str, slug: str = "", theatre
             shows += parse.parse_shows(more.payload)
         except Exception as e:  # noqa: BLE001
             log.warning("date %s fetch failed: %s", dc, e)
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(random.uniform(0.8, 2.5))
 
     filtered = parse.filter_shows(shows, theatre, periods, dates)
     bookable = [c for c in chips if c.status == "BOOKABLE"]

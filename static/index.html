@@ -311,6 +311,8 @@ dialog::backdrop{background:rgba(10,12,20,.45)}
             <div class="field switch"><input type="checkbox" id="sFallback"><label for="sFallback">Use a real browser when Cloudflare blocks plain requests</label></div>
             <div class="field switch"><input type="checkbox" id="sHeadless"><label for="sHeadless">Headless (hidden). Turn off to solve a Cloudflare check by hand once.</label></div>
             <div class="field"><label class="f" for="sMaxDates">Dates to scan per check</label><input type="number" id="sMaxDates" min="1" max="14" value="5"></div>
+            <div class="field"><label class="f" for="sJitter">Random variation per check (± seconds)</label><input type="number" id="sJitter" min="0" max="600" value="30">
+              <div class="hint">Each next check lands at the interval ± this many seconds, e.g. 3 min ± 30 s → anywhere from 2:30 to 3:30.</div></div>
           </div></div>
           <div class="card"><div class="card-h"><h3>🔔 This page</h3></div><div class="card-b">
             <p style="margin-top:0;color:var(--text-2)">Keep this tab open to get desktop notifications and a sound when an alert fires.</p>
@@ -346,6 +348,7 @@ const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAl
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmtDate = d => d && d.length===8 ? new Date(+d.slice(0,4), +d.slice(4,6)-1, +d.slice(6,8)).toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short'}) : d;
 const ago = iso => { if(!iso) return 'never'; const s=(Date.now()-new Date(iso))/1000; if(s<60) return Math.round(s)+'s ago'; if(s<3600) return Math.round(s/60)+'m ago'; if(s<86400) return Math.round(s/3600)+'h ago'; return new Date(iso).toLocaleString('en-IN'); };
+const until = iso => { const s=(new Date(iso)-Date.now())/1000; if(s<=5) return 'now'; if(s<90) return 'in '+Math.round(s)+'s'; return 'in '+Math.round(s/60*10)/10+' min'; };
 const STATUS = {open:'Open', not_open:'Not open', blocked:'Blocked', error:'Error', pending:'Pending'};
 let watches = [], settings = {}, expanded = new Set(), checking = new Set(), lastRun = null, outView = 'table';
 
@@ -399,7 +402,7 @@ function renderWatches(){
         <td><div class="t-title">${esc(w.title)}</div><div class="sub mono">${esc(w.event_code)} · ${esc(w.city)}</div></td>
         <td class="hide-sm">${f}</td>
         <td>${statusBadge(w)}<div class="sub" style="max-width:340px;margin-top:4px">${esc(w.status_detail)}</div></td>
-        <td class="hide-sm"><span title="${esc(w.last_checked||'')}">${ago(w.last_checked)}</span><div class="sub">every ${Math.round(w.interval_sec/60*10)/10} min</div></td>
+        <td class="hide-sm"><span title="${esc(w.last_checked||'')}">${ago(w.last_checked)}</span><div class="sub">every ${Math.round(w.interval_sec/60*10)/10} min${settings.jitter_sec?` ±${settings.jitter_sec}s`:''}</div>${w.active && w.next_check ? `<div class="sub">next ${until(w.next_check)}</div>`:''}</td>
         <td><div class="actions">
           ${(w.last_result||{}).booking_url && w.status==='open' ? `<a class="btn sm primary" href="${esc(w.last_result.booking_url)}" target="_blank" rel="noopener">Book ↗</a>`:''}
           <button class="btn sm" onclick="checkNow(${w.id})" ${checking.has(w.id)?'disabled':''}>Check</button>
@@ -535,7 +538,7 @@ async function loadSettings(){
   settings = await api('/settings');
   $('#sTgToken').value = settings.telegram_bot_token || ''; $('#sTgChat').value = settings.telegram_chat_id || '';
   $('#sNtTopic').value = settings.ntfy_topic || ''; $('#sNtServer').value = settings.ntfy_server || '';
-  $('#sHeadless').checked = settings.headless; $('#sFallback').checked = settings.browser_fallback; $('#sMaxDates').value = settings.max_dates;
+  $('#sHeadless').checked = settings.headless; $('#sFallback').checked = settings.browser_fallback; $('#sMaxDates').value = settings.max_dates; $('#sJitter').value = settings.jitter_sec;
   $('#tgBadge').innerHTML = settings.telegram_configured ? '<span class="badge b-open">Connected</span>' : '<span class="badge b-not_open">Not set</span>';
   $('#ntBadge').innerHTML = settings.ntfy_configured ? '<span class="badge b-open">On</span>' : '<span class="badge b-not_open">Off</span>';
   const ch = [settings.telegram_configured && 'Telegram', settings.ntfy_configured && 'ntfy', 'Dashboard'].filter(Boolean);
@@ -546,7 +549,7 @@ async function loadSettings(){
 async function saveSettings(){
   try { await api('/settings',{method:'PUT',body:{telegram_bot_token:$('#sTgToken').value.trim(), telegram_chat_id:$('#sTgChat').value.trim(),
     ntfy_topic:$('#sNtTopic').value.trim(), ntfy_server:$('#sNtServer').value.trim()||'https://ntfy.sh', headless:$('#sHeadless').checked,
-    browser_fallback:$('#sFallback').checked, max_dates:+$('#sMaxDates').value||5}}); await loadSettings(); toast('Settings saved'); }
+    browser_fallback:$('#sFallback').checked, max_dates:+$('#sMaxDates').value||5, jitter_sec:+$('#sJitter').value||0}}); await loadSettings(); toast('Settings saved'); }
   catch(e){ toast('Save failed', e.message, 'err'); } }
 async function detectChat(){
   await saveSettings();
@@ -589,7 +592,7 @@ async function logout(){ await fetch('/auth/logout',{method:'POST'}); location.h
   updatePreview();
   api('/me').then(m => { if (m && m.can_logout) $('#logoutBtn').style.display = ''; }).catch(()=>{});
   await Promise.all([loadWatches(), loadSettings()]).catch(e => toast('Failed to load', e.message, 'err'));
-  connect(); setInterval(() => renderWatches(), 30000);
+  connect(); setInterval(() => renderWatches(), 15000);
 })();
 </script>
 </body>

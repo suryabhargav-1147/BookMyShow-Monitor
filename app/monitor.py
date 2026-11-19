@@ -5,7 +5,7 @@ import asyncio
 import html
 import logging
 import random
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from . import bms as bms_mod
 from . import db, notify, parse
@@ -15,13 +15,25 @@ MIN_INTERVAL = 60
 client = bms_mod.Bms()
 
 
+def next_delay(interval_sec: int, jitter_sec: int) -> float:
+    """Seconds until the next check: the interval ± a random jitter, never below MIN_INTERVAL.
+
+    e.g. 180 s ± 30 s → anywhere in 150–210 s, different every time."""
+    base = max(MIN_INTERVAL, int(interval_sec))
+    j = max(0, min(int(jitter_sec), base // 2))
+    return max(MIN_INTERVAL, base + random.uniform(-j, j))
+
+
 def is_due(w: dict) -> bool:
     if not w["active"]:
         return False
+    now = datetime.now(timezone.utc)
+    if w.get("next_check"):
+        return now >= datetime.fromisoformat(w["next_check"])
     if not w["last_checked"]:
         return True
     last = datetime.fromisoformat(w["last_checked"])
-    return (datetime.now(timezone.utc) - last).total_seconds() >= max(MIN_INTERVAL, int(w["interval_sec"]))
+    return (now - last).total_seconds() >= max(MIN_INTERVAL, int(w["interval_sec"]))
 
 
 def compose_alert(w: dict, r: bms_mod.CheckResult, changes: list[str], first_open: bool) -> tuple[str, str, str]:
@@ -79,6 +91,8 @@ async def _run_check(w: dict) -> dict:
     prev_status, old_state = w["status"], w["state"]
     updates: dict = {"status": r.status, "status_detail": r.detail, "last_checked": db.now_iso(),
                      "checks": w["checks"] + 1}
+    delay = next_delay(w["interval_sec"], int(s.get("jitter_sec") or 0))
+    updates["next_check"] = (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat(timespec="seconds")
     result = {k: v for k, v in r.__dict__.items() if k != "state"}
     updates["last_result"] = result
     if r.movie_name and (w["title"] in (w["event_code"], "Movie") or w["title"].startswith("ET")):

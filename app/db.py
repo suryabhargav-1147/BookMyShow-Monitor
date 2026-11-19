@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS watches (
     status TEXT NOT NULL DEFAULT 'pending',
     status_detail TEXT NOT NULL DEFAULT '',
     last_checked TEXT,
+    next_check TEXT,
     last_result TEXT NOT NULL DEFAULT '{}',
     state TEXT NOT NULL DEFAULT '{}',
     alerts_sent INTEGER NOT NULL DEFAULT 0,
@@ -58,11 +59,15 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "browser_fallback": "1",
     "max_dates": "5",
     "default_city": "chennai",
+    "jitter_sec": "30",
 }
 SECRET_SETTINGS = {"telegram_bot_token"}
 
 with _lock:
     _conn.executescript(SCHEMA)
+    cols = {r[1] for r in _conn.execute("PRAGMA table_info(watches)")}
+    if "next_check" not in cols:  # databases created before randomized scheduling
+        _conn.execute("ALTER TABLE watches ADD COLUMN next_check TEXT")
     _conn.commit()
 
 
@@ -106,8 +111,8 @@ def get_watch(wid: int) -> dict[str, Any] | None:
 
 
 CREATABLE = ("title", "city", "slug", "event_code", "theatre", "dates", "periods", "region", "interval_sec")
-UPDATABLE = {"title", "city", "theatre", "dates", "periods", "region", "interval_sec", "active", "status",
-             "status_detail", "last_checked", "last_result", "state", "alerts_sent", "checks"}
+UPDATABLE = {"title", "slug", "event_code", "city", "theatre", "dates", "periods", "region", "interval_sec", "active", "status",
+             "status_detail", "last_checked", "next_check", "last_result", "state", "alerts_sent", "checks"}
 
 
 def create_watch(**f: Any) -> int:

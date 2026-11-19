@@ -103,6 +103,7 @@ class SettingsIn(BaseModel):
     headless: bool | None = None
     browser_fallback: bool | None = None
     max_dates: int | None = Field(None, ge=1, le=14)
+    jitter_sec: int | None = Field(None, ge=0, le=600)
 
 
 # ---------------------------------------------------------------- helpers
@@ -128,6 +129,7 @@ def public_settings() -> dict[str, Any]:
     out["headless"] = s["headless"] == "1"
     out["browser_fallback"] = s["browser_fallback"] == "1"
     out["max_dates"] = int(s["max_dates"] or 5)
+    out["jitter_sec"] = int(s.get("jitter_sec") or 0)
     out["api_token_required"] = bool(auth.API_TOKEN)
     out["telegram_bot_status"] = bot.status
     out["cities"] = sorted(k for k in parse.REGIONS if k not in ("delhi", "bangalore"))
@@ -241,7 +243,10 @@ def get_watch(wid: int) -> dict:
 def patch_watch(wid: int, body: WatchPatch) -> dict:
     if not db.get_watch(wid):
         raise HTTPException(404, "watch not found")
-    db.update_watch(wid, **body.model_dump(exclude_none=True))
+    fields = body.model_dump(exclude_none=True)
+    if "interval_sec" in fields or fields.get("active"):
+        fields["next_check"] = None  # reschedule from last check + new interval
+    db.update_watch(wid, **fields)
     w = db.get_watch(wid)
     notify.broadcast("watch", {"watch": w})
     return w or {}

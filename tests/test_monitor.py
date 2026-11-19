@@ -87,3 +87,22 @@ def test_concurrent_checks_alert_once(monkeypatch):
     assert len(sent) == 1
     assert "Booking is live at PVR: Phoenix MarketCity, Velachery" in sent[0]
     assert db.get_watch(wid)["checks"] == 2
+
+
+def test_randomized_schedule():
+    delays = [monitor.next_delay(180, 30) for _ in range(500)]
+    assert all(150 <= d <= 210 for d in delays)
+    assert max(delays) - min(delays) > 40  # actually spread out, not constant
+    assert len({round(d) for d in delays}) > 30
+    assert all(d >= monitor.MIN_INTERVAL for d in (monitor.next_delay(60, 300) for _ in range(200)))
+    assert monitor.next_delay(180, 0) == 180
+
+
+def test_next_check_drives_due():
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    w = {"active": True, "last_checked": (now - timedelta(hours=1)).isoformat(), "interval_sec": 180,
+         "next_check": (now + timedelta(seconds=40)).isoformat()}
+    assert not monitor.is_due(w)  # scheduled time not reached, even though interval passed
+    w["next_check"] = (now - timedelta(seconds=1)).isoformat()
+    assert monitor.is_due(w)

@@ -29,7 +29,36 @@ REGIONS = {
     "kolkata": ("KOLK", "kolkata", "22.573", "88.364", "tun"),
     "pune": ("PUNE", "pune", "18.520", "73.856", "te2"),
     "kochi": ("KOCH", "kochi", "9.932", "76.267", "t9z"),
+    # added later; region codes not yet confirmed against a live check
+    "madurai": ("MADU", "madurai", "9.925", "78.120", ""),
+    "coimbatore": ("COIM", "coimbatore", "11.017", "76.956", ""),
 }
+
+
+def geohash(lat: float, lon: float, precision: int = 3) -> str:
+    """Standard geohash (BookMyShow sends a 3-character one in x-geohash)."""
+    chars, bits, out = "0123456789bcdefghjkmnpqrstuvwxyz", [16, 8, 4, 2, 1], []
+    lat_r, lon_r, even, bit, ch = [-90.0, 90.0], [-180.0, 180.0], True, 0, 0
+    while len(out) < precision:
+        rng, val = (lon_r, lon) if even else (lat_r, lat)
+        mid = (rng[0] + rng[1]) / 2
+        if val > mid:
+            ch |= bits[bit]
+            rng[0] = mid
+        else:
+            rng[1] = mid
+        even = not even
+        if bit < 4:
+            bit += 1
+        else:
+            out.append(chars[ch])
+            bit, ch = 0, 0
+    return "".join(out)
+
+
+for _k, _v in list(REGIONS.items()):
+    if not _v[4]:
+        REGIONS[_k] = (*_v[:4], geohash(float(_v[2]), float(_v[3])))
 
 MOVIE_PATH = re.compile(r"/movies/(?:(?P<city>[a-z0-9-]+)/)?(?P<slug>[a-z0-9-]+)/(?:buytickets/)?(?P<code>ET\d{8})")
 STOPWORDS = {"mall", "the", "cinema", "cinemas", "theatre", "theater", "multiplex", "screen", "screens",

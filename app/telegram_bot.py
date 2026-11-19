@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import re
+from datetime import date
 from typing import Any
 
 import httpx
@@ -29,8 +31,10 @@ HELP = (
     "🎟️ <b>BookMyShow Monitor</b>\n\n"
     "Send a <b>movie name</b> or a <b>BookMyShow link</b> to start watching it, "
     "or use:\n"
-    "/add – watch a movie (I'll ask for the theatre)\n"
-    "/list – your watches (check, pause, delete)\n"
+    "/add – watch a movie (I'll ask city, theatre, timing)\n"
+    "One line: <code>/add doomsday | madurai | radials | 5</code>\n"
+    "<i>(movie | city | theatre | minutes)</i>\n"
+    "/list – your watches: ✏️ edit theatre, city, timing, movie, dates, show time\n"
     "/check – check everything now\n"
     "/city <i>name</i> – default city (now: <b>{city}</b>)\n"
     "/web – one-tap sign-in link for the dashboard\n"
@@ -166,9 +170,14 @@ class Bot:
         elif cmd.startswith("/"):
             await self.send(chat, "I don't know that command. /help")
         else:
-            sess = self.sessions.get(chat)
-            if sess and sess.get("step") == "theatre":
+            sess = self.sessions.get(chat) or {}
+            step = sess.get("step")
+            if step == "theatre":
                 await self.on_theatre(chat, text)
+            elif step == "city":
+                await self.on_add_city(chat, text)
+            elif step == "edit":
+                await self.on_edit_text(chat, sess, text)
             else:
                 self.sessions[chat] = {"step": "movie"}
                 await self.on_movie(chat, text)
@@ -178,62 +187,152 @@ class Bot:
 
     # ------------------------------------------------------------ add flow
     async def on_movie(self, chat: str, text: str) -> None:
+        if "|" in text:  # one line: movie | city | theatre | minutes
+            await self.quick_add(chat, text)
+            return
         city = self._city()
         ref = parse.parse_movie_input(text, city)
         if ref:
             await self.ask_theatre(chat, ref)
             return
+        found = await self.search(chat, city, text)
+        if found:
+            self.sessions[chat] = {"step": "pick", "cands": found[:6]}
+            buttons = [[{"text": f"{m.title} · {m.event_code}", "callback_data": f"pick:{i}"}] for i, m in enumerate(found[:6])]
+            await self.send(chat, "Which one?", buttons)
+
+    async def search(self, chat: str, city: str, text: str) -> list[parse.MovieRef]:
         await self.send(chat, f"🔎 Searching BookMyShow {html.escape(city)} for “{html.escape(text)}”…")
         s = db.get_settings()
         try:
             found = await monitor.client.search_movies(city, text, headless=s.get("headless", "1") == "1")
         except Exception as e:  # noqa: BLE001
             await self.send(chat, f"Search failed ({html.escape(type(e).__name__)}). Paste the BookMyShow link instead.")
-            return
+            return []
         if not found:
-            await self.send(chat, "No match. Paste the movie's BookMyShow link (open the movie on in.bookmyshow.com and share/copy the URL).")
-            return
-        self.sessions[chat] = {"step": "pick", "cands": found[:6]}
-        buttons = [[{"text": f"{m.title} · {m.event_code}", "callback_data": f"pick:{i}"}] for i, m in enumerate(found[:6])]
-        await self.send(chat, "Which one?", buttons)
+            await self.send(chat, "No match. Paste the movie's BookMyShow link (open the movie on in.bookmyshow.com and copy the URL).")
+        return found
 
-    async def ask_theatre(self, chat: str, ref: parse.MovieRef) -> None:
-        self.sessions[chat] = {"step": "theatre", "ref": ref}
-        await self.send(chat, f"🎬 <b>{html.escape(ref.title)}</b> ({html.escape(ref.city)})\n\n"
+    async def quick_add(self, chat: str, text: str) -> None:
+        parts = [p.strip() for p in text.split("|")]
+        movie, city = parts[0], (parts[1] if len(parts) > 1 and parts[1] else self._city())
+        theatre = parts[2] if len(parts) > 2 else ""
+        city, region, warn = self.resolve_city(city)
+        minutes = parts[3] if len(parts) > 3 else ""
+        interval = int(float(minutes) * 60) if re.fullmatch(r"\d+(\.\d+)?", minutes or "") else 120
+        if interval < monitor.MIN_INTERVAL:
+            interval = monitor.MIN_INTERVAL
+        ref = parse.parse_movie_input(movie, city)
+        if not ref:
+            found = await self.search(chat, city, movie)
+            if not found:
+                return
+            ref = found[0]
+        ref.city = city
+        if warn:
+            await self.send(chat, warn)
+        await self.create(chat, ref, theatre, interval, region)
+
+    async def ask_theatre(self, chat: str, ref: parse.MovieRef, region: str = "") -> None:
+        self.sessions[chat] = {"step": "theatre", "ref": ref, "region": region}
+        await self.send(chat, f"🎬 <b>{html.escape(ref.title)}</b>\n📍 City: <b>{html.escape(ref.city.title())}</b>\n\n"
                               "🏛️ Which theatre? Send words from its name, e.g. <code>PVR Grand Mall Velachery</code>.\n"
-                              "Several: separate with commas. Or tap below.",
+                              "Several: separate with commas (= any of them).",
                         [[{"text": "Any theatre in " + ref.city.title(), "callback_data": "th:any"}],
-                         [{"text": "Cancel", "callback_data": "cancel"}]])
+                         [{"text": "📍 Change city", "callback_data": "addcity"}, {"text": "Cancel", "callback_data": "cancel"}]])
 
-    async def on_theatre(self, chat: str, theatre: str) -> None:
-        sess = self.sessions.pop(chat, None) or {}
+    async def on_add_city(self, chat: str, text: str) -> None:
+        sess = self.sessions.get(chat) or {}
         ref: parse.MovieRef | None = sess.get("ref")
         if not ref:
+            await self.send(chat, "Let's start over: send a movie name.")
+            return
+        city, region, warn = self.resolve_city(text)
+        ref.city = city
+        if warn:
+            await self.send(chat, warn)
+        await self.ask_theatre(chat, ref, region)
+
+    async def on_theatre(self, chat: str, theatre: str) -> None:
+        sess = self.sessions.get(chat) or {}
+        if not sess.get("ref"):
             await self.send(chat, "Let's start over: send a movie name. /add")
             return
+        sess.update(step="interval", theatre=theatre)
+        await self.send(chat, f"🏛️ {html.escape(theatre or 'Any theatre')}\n\n⏱ How often should I check?",
+                        self.interval_buttons("ni"))
+
+    def interval_buttons(self, prefix: str) -> Markup:
+        mins = [1, 2, 3, 5, 10, 15, 30]
+        row = lambda ms: [{"text": f"{m} min", "callback_data": f"{prefix}:{m * 60}"} for m in ms]  # noqa: E731
+        return [row(mins[:4]), row(mins[4:])]
+
+    async def create(self, chat: str, ref: parse.MovieRef, theatre: str, interval: int, region: str = "") -> None:
+        self.sessions.pop(chat, None)
         wid = db.create_watch(title=ref.title, city=ref.city, slug=ref.slug, event_code=ref.event_code,
-                              theatre=theatre, interval_sec=120)
-        db.log_event(wid, "info", f"Added from Telegram: {ref.title} ({ref.event_code}) @ {theatre or 'any theatre'}")
-        await self.send(chat, f"✅ Watching <b>{html.escape(ref.title)}</b> @ <b>{html.escape(theatre or 'any theatre')}</b>, "
-                              "every 2 min. Checking now…")
+                              theatre=theatre, interval_sec=interval, region=region)
+        db.log_event(wid, "info", f"Added from Telegram: {ref.title} ({ref.event_code}) in {ref.city} @ {theatre or 'any theatre'}")
+        await self.send(chat, f"✅ Watching <b>{html.escape(ref.title)}</b> in <b>{html.escape(ref.city.title())}</b> @ "
+                              f"<b>{html.escape(theatre or 'any theatre')}</b>, {self.every(interval)}. Checking now…")
         w = await monitor.run_check(db.get_watch(wid))
         await self.send(chat, self.describe(w), self.watch_buttons(w))
 
-    # ------------------------------------------------------------ list / actions
+    @staticmethod
+    def resolve_city(text: str) -> tuple[str, str, str]:
+        """'madurai' → ('madurai', '', '') ; 'salem SALM' → ('salem', 'SALM', '') ; unknown → warning."""
+        bits = text.strip().split()
+        region = ""
+        if len(bits) > 1 and re.fullmatch(r"[A-Za-z]{3,6}", bits[-1]) and bits[-1].isupper():
+            region = bits.pop()
+        city = "-".join(b.lower() for b in bits) or "chennai"
+        city = {"bangalore": "bengaluru", "delhi": "delhi-ncr", "trichy": "tiruchirappalli"}.get(city, city)
+        warn = ""
+        if city not in parse.REGIONS and not region:
+            warn = (f"⚠️ I don't know BookMyShow's region code for <b>{html.escape(city)}</b>, so I'll guess. "
+                    "If checks never show dates, send the city again with its code, e.g. <code>salem SALM</code>.")
+        return city, region, warn
+
+    # ------------------------------------------------------------ watch cards
+    @staticmethod
+    def every(sec: int) -> str:
+        jit = int(db.get_settings().get("jitter_sec") or 0)
+        m = sec / 60
+        return f"every {m:g} min" + (f" (±{jit}s)" if jit else "")
+
     def describe(self, w: dict) -> str:
         r = w.get("last_result") or {}
         lines = [f"{ICON.get(w['status'], '')} <b>{html.escape(w['title'])}</b> #{w['id']}",
-                 f"🏛️ {html.escape(w['theatre'] or 'any theatre')} · {html.escape(w['city'])}"
-                 + ("" if w["active"] else " · ⏸ paused"),
-                 f"{STATUS.get(w['status'], w['status'])}: {html.escape(w['status_detail'])}"]
+                 f"🏛️ {html.escape(w['theatre'] or 'any theatre')} · 📍 {html.escape(w['city'].title())}",
+                 f"⏱ {self.every(w['interval_sec'])}" + ("" if w["active"] else " · ⏸ paused")]
+        if w.get("dates") or w.get("periods"):
+            lines.append(" · ".join(filter(None, [
+                w.get("dates") and "📅 " + ", ".join(parse.fmt_date(d) for d in w["dates"].split(",")),
+                w.get("periods") and "🕑 " + w["periods"].replace(",", ", ")])))
+        lines.append(f"{STATUS.get(w['status'], w['status'])}: {html.escape(w['status_detail'])}")
         if w["status"] == "open" and r.get("booking_url"):
             lines.append(f'<a href="{html.escape(r["booking_url"])}">Book on BookMyShow →</a>')
         return "\n".join(lines)
 
     def watch_buttons(self, w: dict) -> Markup:
         return [[{"text": "🔄 Check", "callback_data": f"chk:{w['id']}"},
-                 {"text": "⏸ Pause" if w["active"] else "▶️ Resume", "callback_data": f"tog:{w['id']}"},
+                 {"text": "✏️ Edit", "callback_data": f"edit:{w['id']}"}],
+                [{"text": "⏸ Pause" if w["active"] else "▶️ Resume", "callback_data": f"tog:{w['id']}"},
                  {"text": "🗑 Delete", "callback_data": f"del:{w['id']}"}]]
+
+    def edit_buttons(self, w: dict) -> Markup:
+        i = w["id"]
+        return [[{"text": "🏛 Theatre", "callback_data": f"e:{i}:th"}, {"text": "📍 City", "callback_data": f"e:{i}:ci"}],
+                [{"text": "⏱ Timing", "callback_data": f"e:{i}:iv"}, {"text": "🎬 Movie", "callback_data": f"e:{i}:mv"}],
+                [{"text": "📅 Dates", "callback_data": f"e:{i}:dt"}, {"text": "🕑 Show time", "callback_data": f"e:{i}:pt"}],
+                [{"text": "✔️ Done", "callback_data": f"done:{i}"}]]
+
+    def period_buttons(self, w: dict) -> Markup:
+        on = set(filter(None, w["periods"].split(",")))
+        names = {"morning": "Morning 6–12", "afternoon": "Afternoon 12–4", "evening": "Evening 4–7", "night": "Night 7–12"}
+        rows = [[{"text": ("✅ " if p in on else "▫️ ") + label, "callback_data": f"pt:{w['id']}:{p}"}]
+                for p, label in names.items()]
+        return rows + [[{"text": "Any time", "callback_data": f"pt:{w['id']}:any"},
+                        {"text": "✔️ Done", "callback_data": f"edit:{w['id']}"}]]
 
     async def on_list(self, chat: str) -> None:
         ws = db.list_watches()
@@ -253,35 +352,204 @@ class Bot:
             w2 = await monitor.run_check(w)
             await self.send(chat, self.describe(w2), self.watch_buttons(w2))
 
+    # ------------------------------------------------------------ editing
+    async def apply(self, chat: str, wid: int, recheck: bool, **fields: Any) -> None:
+        """Save changes; filter changes reset alert memory so the next check reports afresh."""
+        if recheck:
+            fields.update(state={}, status="pending", status_detail="Changed, re-checking")
+        fields["next_check"] = None
+        db.update_watch(wid, **fields)
+        w = db.get_watch(wid)
+        if recheck and w["active"]:
+            w = await monitor.run_check(w)
+        await self.send(chat, "Saved.\n\n" + self.describe(w), self.watch_buttons(w))
+
+    async def on_edit_text(self, chat: str, sess: dict, text: str) -> None:
+        self.sessions.pop(chat, None)
+        wid, field = sess["wid"], sess["field"]
+        w = db.get_watch(wid)
+        if not w:
+            await self.send(chat, "That watch no longer exists.")
+            return
+        if field == "th":
+            await self.apply(chat, wid, True, theatre="" if text.lower() in ("any", "all", "-") else text)
+        elif field == "ci":
+            city, region, warn = self.resolve_city(text)
+            if warn:
+                await self.send(chat, warn)
+            await self.apply(chat, wid, True, city=city, region=region)
+        elif field == "dt":
+            dates = parse_dates_text(text)
+            if dates is None:
+                self.sessions[chat] = sess
+                await self.send(chat, "Couldn't read those dates. Examples: <code>18 dec, 19 dec</code> · "
+                                      "<code>18/12</code> · <code>20261218</code> · <code>any</code>")
+                return
+            await self.apply(chat, wid, True, dates=dates)
+        elif field == "mv":
+            ref = parse.parse_movie_input(text, w["city"])
+            if not ref:
+                found = await self.search(chat, w["city"], text)
+                if not found:
+                    return
+                ref = found[0]
+            await self.apply(chat, wid, True, title=ref.title, slug=ref.slug, event_code=ref.event_code)
+        elif field == "iv":
+            m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(m|min|mins|minutes)?\s*", text.lower())
+            if not m:
+                self.sessions[chat] = sess
+                await self.send(chat, "Send minutes as a number, e.g. <code>5</code>.")
+                return
+            await self.apply(chat, wid, False, interval_sec=max(monitor.MIN_INTERVAL, int(float(m.group(1)) * 60)))
+
+    async def ask_edit(self, chat: str, w: dict, field: str) -> None:
+        i = w["id"]
+        if field == "iv":
+            await self.send(chat, f"⏱ Now {self.every(w['interval_sec'])}. Pick one, or send minutes (e.g. <code>4</code>):",
+                            self.interval_buttons(f"iv:{i}"))
+            self.sessions[chat] = {"step": "edit", "wid": i, "field": "iv"}
+        elif field == "pt":
+            await self.send(chat, "🕑 Which show times? Tap to toggle.", self.period_buttons(w))
+        elif field == "th":
+            venues = (w.get("last_result") or {}).get("all_venues") or []
+            self.sessions[chat] = {"step": "edit", "wid": i, "field": "th", "venues": venues[:12]}
+            rows = [[{"text": v[:60], "callback_data": f"tv:{i}:{k}"}] for k, v in enumerate(venues[:12])]
+            rows.append([{"text": "Any theatre", "callback_data": f"tv:{i}:any"}])
+            await self.send(chat, f"🏛 Now: <b>{html.escape(w['theatre'] or 'any theatre')}</b>\n"
+                                  "Send words from the theatre name" + (", or pick one showing it now:" if venues else ":"), rows)
+        else:
+            prompts = {"ci": f"📍 Now <b>{html.escape(w['city'].title())}</b>. Send the city, e.g. <code>madurai</code>.",
+                       "mv": "🎬 Send the movie name or its BookMyShow link.",
+                       "dt": "📅 Send dates (e.g. <code>18 dec, 19 dec</code>), or <code>any</code> for all dates."}
+            self.sessions[chat] = {"step": "edit", "wid": i, "field": field}
+            await self.send(chat, prompts[field])
+
     async def on_button(self, chat: str, data: str) -> None:
-        kind, _, val = data.partition(":")
+        parts = data.split(":")
+        kind = parts[0]
         if kind == "pick":
             sess = self.sessions.get(chat) or {}
             cands = sess.get("cands") or []
-            if val.isdigit() and int(val) < len(cands):
-                await self.ask_theatre(chat, cands[int(val)])
+            if len(parts) > 1 and parts[1].isdigit() and int(parts[1]) < len(cands):
+                await self.ask_theatre(chat, cands[int(parts[1])])
             else:
                 await self.send(chat, "That list expired; send the movie name again.")
-        elif kind == "th":
+            return
+        if kind == "th":
             await self.on_theatre(chat, "")
-        elif kind == "cancel":
+            return
+        if kind == "addcity":
+            sess = self.sessions.get(chat) or {}
+            if sess.get("ref"):
+                sess["step"] = "city"
+                await self.send(chat, "📍 Which city? e.g. <code>madurai</code>")
+            return
+        if kind == "ni":  # interval chosen while adding
+            sess = self.sessions.get(chat) or {}
+            if sess.get("ref") and parts[1].isdigit():
+                await self.create(chat, sess["ref"], sess.get("theatre", ""), int(parts[1]), sess.get("region", ""))
+            else:
+                await self.send(chat, "That expired; send the movie again.")
+            return
+        if kind == "cancel":
             self.sessions.pop(chat, None)
             await self.send(chat, "Cancelled.")
-        elif kind in ("chk", "tog", "del") and val.isdigit():
-            w = db.get_watch(int(val))
-            if not w:
-                await self.send(chat, "That watch no longer exists.")
-                return
-            if kind == "chk":
-                w = await monitor.run_check(w)
-                await self.send(chat, self.describe(w), self.watch_buttons(w))
-            elif kind == "tog":
-                db.update_watch(w["id"], active=not w["active"])
-                w = db.get_watch(w["id"])
-                await self.send(chat, self.describe(w), self.watch_buttons(w))
+            return
+        if len(parts) < 2 or not parts[1].isdigit():
+            return
+        w = db.get_watch(int(parts[1]))
+        if not w:
+            await self.send(chat, "That watch no longer exists.")
+            return
+        wid = w["id"]
+        if kind == "chk":
+            w = await monitor.run_check(w)
+            await self.send(chat, self.describe(w), self.watch_buttons(w))
+        elif kind == "tog":
+            db.update_watch(wid, active=not w["active"], next_check=None)
+            w = db.get_watch(wid)
+            await self.send(chat, self.describe(w), self.watch_buttons(w))
+        elif kind == "del":
+            await self.send(chat, f"Delete <b>{html.escape(w['title'])}</b> @ {html.escape(w['theatre'] or 'any theatre')}?",
+                            [[{"text": "🗑 Yes, delete", "callback_data": f"delok:{wid}"},
+                              {"text": "Keep", "callback_data": f"done:{wid}"}]])
+        elif kind == "delok":
+            db.delete_watch(wid)
+            await self.send(chat, f"🗑 Deleted <b>{html.escape(w['title'])}</b> @ {html.escape(w['theatre'] or 'any theatre')}.")
+        elif kind == "edit":
+            self.sessions.pop(chat, None)
+            await self.send(chat, "✏️ What do you want to change?\n\n" + self.describe(w), self.edit_buttons(w))
+        elif kind == "done":
+            self.sessions.pop(chat, None)
+            await self.send(chat, self.describe(w), self.watch_buttons(w))
+        elif kind == "e" and len(parts) > 2:
+            await self.ask_edit(chat, w, parts[2])
+        elif kind == "iv" and len(parts) > 2 and parts[2].isdigit():
+            self.sessions.pop(chat, None)
+            await self.apply(chat, wid, False, interval_sec=int(parts[2]))
+        elif kind == "pt" and len(parts) > 2:
+            on = set(filter(None, w["periods"].split(",")))
+            if parts[2] == "any":
+                on = set()
             else:
-                db.delete_watch(w["id"])
-                await self.send(chat, f"🗑 Deleted <b>{html.escape(w['title'])}</b> @ {html.escape(w['theatre'] or 'any theatre')}.")
+                on ^= {parts[2]}
+            order = ["morning", "afternoon", "evening", "night"]
+            db.update_watch(wid, periods=",".join(p for p in order if p in on), state={}, next_check=None)
+            await self.send(chat, "🕑 " + (", ".join(p for p in order if p in on) or "Any time"),
+                            self.period_buttons(db.get_watch(wid)))
+        elif kind == "tv" and len(parts) > 2:
+            sess = self.sessions.pop(chat, None) or {}
+            venues = sess.get("venues") or (w.get("last_result") or {}).get("all_venues") or []
+            if parts[2] == "any":
+                await self.apply(chat, wid, True, theatre="")
+            elif parts[2].isdigit() and int(parts[2]) < len(venues):
+                await self.apply(chat, wid, True, theatre=venues[int(parts[2])])
+
+
+MONTHS = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+
+
+def parse_dates_text(text: str, today: date | None = None) -> str | None:
+    """'18 dec, 19/12, 20261220' → '20261218,20261219,20261220'; 'any' → ''; unreadable → None."""
+    today = today or date.today()
+    t = text.strip().lower()
+    if t in ("any", "all", "clear", "none", "-"):
+        return ""
+    out = []
+    for part in re.split(r"[,;]+|\s+and\s+", t):
+        part = part.strip()
+        if not part:
+            continue
+        m8 = re.fullmatch(r"(20\d{2})(\d{2})(\d{2})", part)
+        mnum = re.fullmatch(r"(\d{1,2})[/\-.](\d{1,2})(?:[/\-.](\d{2,4}))?", part)
+        mtxt = re.fullmatch(r"(\d{1,2})\s*([a-z]{3})[a-z]*(?:\s+(\d{4}))?", part) or \
+            re.fullmatch(r"([a-z]{3})[a-z]*\s*(\d{1,2})(?:\s+(\d{4}))?", part)
+        try:
+            if m8:
+                d = date(int(m8[1]), int(m8[2]), int(m8[3]))
+            elif mnum:
+                y = int(mnum[3]) if mnum[3] else None
+                y = (2000 + y if y and y < 100 else y)
+                d = _with_year(int(mnum[1]), int(mnum[2]), y, today)
+            elif mtxt:
+                a, b = mtxt[1], mtxt[2]
+                day, mon = (int(a), b) if a.isdigit() else (int(b), a)
+                if mon[:3] not in MONTHS:
+                    return None
+                d = _with_year(day, MONTHS[mon[:3]], int(mtxt[3]) if mtxt[3] else None, today)
+            else:
+                return None
+        except ValueError:
+            return None
+        out.append(d.strftime("%Y%m%d"))
+    return ",".join(sorted(set(out))) if out else None
+
+
+def _with_year(day: int, month: int, year: int | None, today: date) -> date:
+    if year:
+        return date(year, month, day)
+    d = date(today.year, month, day)
+    return d if d >= today else date(today.year + 1, month, day)
 
 
 class TelegramError(Exception):
