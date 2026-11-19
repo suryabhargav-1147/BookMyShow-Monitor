@@ -1,0 +1,57 @@
+name: BMS Monitor
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'     # every 5 min (GitHub's minimum; runs can start late)
+  workflow_dispatch:           # "Run workflow" button
+    inputs:
+      notify_test:
+        description: 'Also send a test alert'
+        type: boolean
+        default: false
+
+concurrency:
+  group: bms-monitor
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: '3.12'
+          enable-cache: true
+
+      - name: Install
+        run: uv sync --frozen --no-dev
+
+      - name: Check BookMyShow
+        env:
+          BMS_MOVIE: ${{ vars.BMS_MOVIE }}
+          BMS_CITY: ${{ vars.BMS_CITY }}
+          BMS_THEATRE: ${{ vars.BMS_THEATRE }}
+          BMS_DATES: ${{ vars.BMS_DATES }}
+          BMS_TIME: ${{ vars.BMS_TIME }}
+          BMS_REGION: ${{ vars.BMS_REGION }}
+          BMS_NOTIFY_TEST: ${{ inputs.notify_test }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: uv run --no-dev bms-check
+
+      - name: Save state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/
+          if git diff --cached --quiet; then echo "no change"; exit 0; fi
+          git commit -m "chore: update BMS state [skip ci]"
+          for i in 1 2 3; do git pull --rebase -q && git push -q && exit 0; sleep 3; done
+          exit 1
