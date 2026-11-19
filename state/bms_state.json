@@ -1,6 +1,6 @@
 {
  "city": "chennai",
- "detail": "Cloudflare challenge: HTTP 403 (text/html). Turn off headless mode in Integrations and solve it once in the browser window.",
+ "detail": "Cloudflare challenge: browser fetch HTTP 403 on 'Attention Required! | Cloudflare' (from GitHub's servers)",
  "event_code": "ET00439706",
  "movie": "Avengers Doomsday",
  "state": {},
