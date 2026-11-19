@@ -33,15 +33,20 @@ def broadcast(kind: str, payload: dict[str, Any]) -> None:
 
 async def telegram(text: str, settings: dict[str, str] | None = None) -> tuple[bool, str]:
     s = settings or db.get_settings()
-    token, chat = s.get("telegram_bot_token", ""), s.get("telegram_chat_id", "")
-    if not token or not chat:
+    token = s.get("telegram_bot_token", "").strip()
+    chats = [c.strip() for c in s.get("telegram_chat_id", "").replace(";", ",").split(",") if c.strip()]
+    if not token or not chats:
         return False, "Telegram not configured"
+    results = []
     async with httpx.AsyncClient(timeout=15) as c:
-        r = await c.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                         json={"chat_id": chat, "text": text, "parse_mode": "HTML",
-                               "disable_web_page_preview": True})
-    ok = r.status_code == 200 and r.json().get("ok")
-    return bool(ok), "sent" if ok else r.text[:300]
+        for i, chat in enumerate(chats, 1):  # several user IDs: comma-separated
+            r = await c.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                             json={"chat_id": chat, "text": text, "parse_mode": "HTML",
+                                   "disable_web_page_preview": True})
+            ok = r.status_code == 200 and r.json().get("ok")
+            # never echo chat IDs (they'd show in public CI logs); refer to them by position
+            results.append((ok, f"#{i} sent" if ok else f"#{i} failed: {r.json().get('description', r.status_code)}"))
+    return any(ok for ok, _ in results), ", ".join(m for _, m in results)
 
 
 async def telegram_detect_chat(token: str) -> list[dict[str, str]]:

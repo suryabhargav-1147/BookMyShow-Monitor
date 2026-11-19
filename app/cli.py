@@ -52,7 +52,27 @@ def summary_md(movie: str, theatre: str, r: bms_mod.CheckResult) -> str:
     return "\n".join(lines) + "\n"
 
 
+async def send_test_only(a: argparse.Namespace) -> int:
+    """Send a test alert to every configured channel without contacting BookMyShow."""
+    settings = {"telegram_bot_token": a.telegram_token, "telegram_chat_id": a.telegram_chat,
+                "ntfy_topic": a.ntfy_topic, "ntfy_server": a.ntfy_server or "https://ntfy.sh"}
+    what = f"{a.movie or 'your movie'} @ {a.theatre or a.city}"
+    title, body = "🔔 BMS Monitor: test alert", f"Alerts are working.\nWatching: {what}"
+    ok_tg, tg = await notify.telegram(f"<b>{html.escape(title)}</b>\n{html.escape(body)}", settings)
+    ok_nt, nt = await notify.ntfy(title, body, "", settings)
+    print(f"telegram: {tg}\nntfy: {nt}")
+    if os.getenv("GITHUB_STEP_SUMMARY"):
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+            f.write(f"## 🔔 Test alert\n\n- Telegram: {tg}\n- ntfy: {nt}\n")
+    if not (ok_tg or ok_nt):
+        print("::error::No notification channel delivered the test message")
+        return 1
+    return 0
+
+
 async def main_async(a: argparse.Namespace) -> int:
+    if a.test_only:
+        return await send_test_only(a)
     ref = parse.parse_movie_input(a.movie, a.city)
     if not ref:
         print(f"::error::BMS_MOVIE must be a BookMyShow movie URL or ET code, got {a.movie!r}")
@@ -143,12 +163,13 @@ def main() -> None:
     p.add_argument("--browser", action="store_true", help="allow Playwright fallback (needs browsers installed)")
     p.add_argument("--notify-test", action="store_true", default=env("BMS_NOTIFY_TEST") == "true",
                    help="also send a test alert")
+    p.add_argument("--test-only", action="store_true", help="only send a test alert; don't check BookMyShow")
     p.add_argument("--telegram-token", default=env("TELEGRAM_BOT_TOKEN"))
     p.add_argument("--telegram-chat", default=env("TELEGRAM_CHAT_ID"))
     p.add_argument("--ntfy-topic", default=env("NTFY_TOPIC"))
     p.add_argument("--ntfy-server", default=env("NTFY_SERVER"))
     a = p.parse_args()
-    if not a.movie:
+    if not a.movie and not a.test_only:
         p.error("set BMS_MOVIE or --movie")
     a.city = a.city.lower()
     sys.exit(asyncio.run(main_async(a)))
