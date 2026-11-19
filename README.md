@@ -40,6 +40,18 @@ systemctl --user enable --now bms-monitor   # unit file: ~/.config/systemd/user/
 journalctl --user -u bms-monitor -f        # logs
 ```
 
+## Host on a VPS (like redbus.viswa2k.in)
+
+```bash
+./deploy/setup-server.sh --migrate      # rsync → ~/apps/bms-monitor, .env from secrets.yml, docker compose up
+ssh vps && sudo bash ~/apps/bms-monitor/deploy/server-root.sh   # once: nginx site bms.viswa2k.in
+```
+
+- Docker on `127.0.0.1:30030`, nginx on :80, and Cloudflare (Flexible SSL) in front.
+- Add a proxied DNS record `bms` → the VPS IP in Cloudflare.
+- Sign-in is limited to the allowed Telegram user IDs: you get a one-time code from the bot, or send `/web` to the bot for a link.
+- Only one copy may run the bot. Stop the laptop service first: `systemctl --user disable --now bms-monitor`.
+
 ## Run free on GitHub Actions (no PC needed)
 
 `.github/workflows/bms-monitor.yml` runs `bms-check` every 5 minutes. Each run:

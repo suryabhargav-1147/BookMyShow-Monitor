@@ -20,7 +20,7 @@ from typing import Any
 
 import httpx
 
-from . import db, monitor, parse
+from . import auth, db, monitor, parse
 
 log = logging.getLogger("telegram-bot")
 ICON = {"open": "🟢", "not_open": "⚪", "blocked": "🟠", "error": "🔴", "pending": "⏳"}
@@ -33,6 +33,7 @@ HELP = (
     "/list – your watches (check, pause, delete)\n"
     "/check – check everything now\n"
     "/city <i>name</i> – default city (now: <b>{city}</b>)\n"
+    "/web – one-tap sign-in link for the dashboard\n"
     "/help – this message\n\n"
     "I message you when tickets open at your theatre, a new date or show appears, "
     "or a sold-out show gets seats back."
@@ -84,6 +85,7 @@ class Bot:
                         {"command": "list", "description": "Your watches"},
                         {"command": "check", "description": "Check everything now"},
                         {"command": "city", "description": "Set default city"},
+                        {"command": "web", "description": "Sign-in link for the dashboard"},
                         {"command": "help", "description": "How to use"}])
                     self.status = "running"
                     log.info("Telegram bot @%s listening", me.get("username"))
@@ -149,6 +151,15 @@ class Bot:
                 await self.send(chat, f"📍 Default city set to <b>{html.escape(self._city())}</b>.")
             else:
                 await self.send(chat, f"📍 Default city is <b>{html.escape(city)}</b>. Change it: <code>/city mumbai</code>")
+        elif cmd == "/web":
+            base = auth.public_url()
+            if not base:
+                await self.send(chat, "The dashboard has no public address (BMS_PUBLIC_URL isn't set). "
+                                      "Open it on the machine running the monitor.")
+            else:
+                link = f"{base}/auth/link?t={auth.codes.link_token(chat)}"
+                await self.send(chat, f'🔐 <a href="{html.escape(link)}">Open BMS Monitor dashboard</a>\n'
+                                      "One-time link, valid 10 minutes. Don't forward it.")
         elif cmd == "/cancel":
             self.sessions.pop(chat, None)
             await self.send(chat, "Cancelled.")

@@ -3,18 +3,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hmac
 import logging
 import os
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import bms as bms_mod
-from . import db, monitor, notify, parse
+from . import auth, db, monitor, notify, parse
 from .telegram_bot import bot
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -22,7 +21,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 STATIC = Path(__file__).resolve().parent.parent / "static"
-API_TOKEN = os.getenv("BMS_API_TOKEN", "")
 
 
 @contextlib.asynccontextmanager
@@ -40,26 +38,29 @@ app = FastAPI(
     title="BookMyShow Monitor API",
     version="1.0.0",
     description="Watch BookMyShow for ticket openings at a city or a specific theatre. "
-                "Alerts go to Telegram, ntfy and the dashboard. Set BMS_API_TOKEN to require "
-                "`Authorization: Bearer <token>` from non-local clients.",
+                "Alerts go to Telegram, ntfy and the dashboard. Access is limited to the allowed Telegram "
+                "user IDs (sign in at /login), local requests, or `Authorization: Bearer $BMS_API_TOKEN`.",
     lifespan=lifespan,
 )
 
 
-def auth(request: Request) -> None:
-    """Local clients are trusted; remote ones need the bearer token when BMS_API_TOKEN is set."""
-    host = request.client.host if request.client else ""
-    if host in ("127.0.0.1", "::1", "localhost", "testclient"):
-        return
-    if not API_TOKEN:
-        return
-    supplied = request.headers.get("authorization", "").removeprefix("Bearer ").strip() \
-        or request.query_params.get("token", "")
-    if not hmac.compare_digest(supplied, API_TOKEN):
-        raise HTTPException(401, "missing or bad bearer token")
+OPEN_PATHS = ("/login", "/auth/", "/favicon.ico", "/healthz")
 
 
-api = Depends(auth)
+@app.middleware("http")
+async def guard(request: Request, call_next):
+    """Only allowed Telegram users (session), local direct calls, or the bearer token get in."""
+    path = request.url.path
+    if path.startswith(OPEN_PATHS) or auth.is_authorized(request):
+        return await call_next(request)
+    if path.startswith("/api/"):
+        return JSONResponse({"detail": "sign in required"}, status_code=401, headers={"Cache-Control": "no-store"})
+    return RedirectResponse("/login", status_code=303)
+
+
+@app.get("/healthz", include_in_schema=False)
+def healthz() -> dict:
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------- models
@@ -127,7 +128,7 @@ def public_settings() -> dict[str, Any]:
     out["headless"] = s["headless"] == "1"
     out["browser_fallback"] = s["browser_fallback"] == "1"
     out["max_dates"] = int(s["max_dates"] or 5)
-    out["api_token_required"] = bool(API_TOKEN)
+    out["api_token_required"] = bool(auth.API_TOKEN)
     out["telegram_bot_status"] = bot.status
     out["cities"] = sorted(k for k in parse.REGIONS if k not in ("delhi", "bangalore"))
     return out
@@ -139,13 +140,83 @@ def index() -> FileResponse:
     return FileResponse(STATIC / "index.html")
 
 
+# ---------------------------------------------------------------- sign-in (allowed Telegram users only)
+class CodeRequest(BaseModel):
+    user_id: str = Field(..., max_length=20)
+
+
+class CodeVerify(BaseModel):
+    user_id: str = Field(..., max_length=20)
+    code: str = Field(..., max_length=10)
+
+
+def _set_session(resp, request: Request, uid: str):
+    secure = request.headers.get("x-forwarded-proto", request.url.scheme) == "https"
+    resp.set_cookie(auth.COOKIE, auth.make_session(uid), max_age=auth.SESSION_DAYS * 86400,
+                    httponly=True, secure=secure, samesite="lax", path="/")
+    return resp
+
+
+@app.get("/login", include_in_schema=False)
+def login_page(request: Request):
+    if auth.is_authorized(request):
+        return RedirectResponse("/", status_code=303)
+    return FileResponse(STATIC / "login.html", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/auth/code", include_in_schema=False)
+async def auth_code(body: CodeRequest) -> dict:
+    uid = body.user_id.strip()
+    code = auth.codes.issue(uid) if uid.lstrip("-").isdigit() else None
+    if code:
+        ok, _ = await notify.telegram(
+            f"🔐 <b>BMS Monitor sign-in code: <code>{code}</code></b>\nValid 5 minutes. "
+            "If you didn't try to sign in, ignore this.",
+            {**db.get_settings(), "telegram_chat_id": uid})
+        db.log_event(None, "info", f"Sign-in code requested for user #{sorted(auth.allowed_ids()).index(uid) + 1}"
+                                   + ("" if ok else " (Telegram delivery failed)"))
+    # same answer either way: don't reveal which IDs are allowed
+    return {"ok": True, "message": "If that ID is allowed, a code was sent to it on Telegram."}
+
+
+@app.post("/auth/verify", include_in_schema=False)
+def auth_verify(body: CodeVerify, request: Request):
+    uid = body.user_id.strip()
+    if not auth.codes.verify(uid, body.code):
+        return JSONResponse({"ok": False, "message": "Wrong or expired code."}, status_code=401)
+    return _set_session(JSONResponse({"ok": True}), request, uid)
+
+
+@app.get("/auth/link", include_in_schema=False)
+def auth_link(t: str, request: Request):
+    uid = auth.codes.redeem_link(t)
+    if not uid:
+        return HTMLResponse("<p style='font-family:sans-serif'>This sign-in link is invalid or expired. "
+                            "Send <b>/web</b> to the bot for a new one.</p>", status_code=401)
+    return _set_session(RedirectResponse("/", status_code=303), request, uid)
+
+
+@app.post("/auth/logout", include_in_schema=False)
+def auth_logout():
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(auth.COOKIE, path="/")
+    return resp
+
+
+@app.get("/api/v1/me", tags=["settings"])
+def me(request: Request) -> dict:
+    uid = auth.session_user(request)
+    return {"via": "session" if uid else "bearer" if auth.bearer_ok(request) else "local",
+            "user": f"#{sorted(auth.allowed_ids()).index(uid) + 1}" if uid else None, "can_logout": bool(uid)}
+
+
 # ---------------------------------------------------------------- API v1
-@app.get("/api/v1/watches", dependencies=[api], tags=["watches"])
+@app.get("/api/v1/watches", tags=["watches"])
 def list_watches() -> list[dict]:
     return db.list_watches()
 
 
-@app.post("/api/v1/watches", dependencies=[api], tags=["watches"], status_code=201)
+@app.post("/api/v1/watches", tags=["watches"], status_code=201)
 async def create_watch(body: WatchIn) -> dict:
     ref = await resolve_movie(body.movie, body.city)
     wid = db.create_watch(title=ref.title, city=ref.city, slug=ref.slug, event_code=ref.event_code,
@@ -158,7 +229,7 @@ async def create_watch(body: WatchIn) -> dict:
     return w or {}
 
 
-@app.get("/api/v1/watches/{wid}", dependencies=[api], tags=["watches"])
+@app.get("/api/v1/watches/{wid}", tags=["watches"])
 def get_watch(wid: int) -> dict:
     w = db.get_watch(wid)
     if not w:
@@ -166,7 +237,7 @@ def get_watch(wid: int) -> dict:
     return w
 
 
-@app.patch("/api/v1/watches/{wid}", dependencies=[api], tags=["watches"])
+@app.patch("/api/v1/watches/{wid}", tags=["watches"])
 def patch_watch(wid: int, body: WatchPatch) -> dict:
     if not db.get_watch(wid):
         raise HTTPException(404, "watch not found")
@@ -176,13 +247,13 @@ def patch_watch(wid: int, body: WatchPatch) -> dict:
     return w or {}
 
 
-@app.delete("/api/v1/watches/{wid}", dependencies=[api], tags=["watches"], status_code=204)
+@app.delete("/api/v1/watches/{wid}", tags=["watches"], status_code=204)
 def delete_watch(wid: int) -> None:
     db.delete_watch(wid)
     notify.broadcast("deleted", {"watch_id": wid})
 
 
-@app.post("/api/v1/watches/{wid}/check", dependencies=[api], tags=["watches"])
+@app.post("/api/v1/watches/{wid}/check", tags=["watches"])
 async def check_now(wid: int) -> dict:
     w = db.get_watch(wid)
     if not w:
@@ -190,14 +261,14 @@ async def check_now(wid: int) -> dict:
     return await monitor.run_check(w)
 
 
-@app.post("/api/v1/watches/{wid}/reset", dependencies=[api], tags=["watches"])
+@app.post("/api/v1/watches/{wid}/reset", tags=["watches"])
 def reset_watch(wid: int) -> dict:
     """Forget what was already alerted so the next check alerts again."""
     db.update_watch(wid, state={}, status="pending")
     return db.get_watch(wid) or {}
 
 
-@app.get("/api/v1/dataset", dependencies=[api], tags=["results"])
+@app.get("/api/v1/dataset", tags=["results"])
 def dataset() -> list[dict]:
     """Flat list of every currently matching show across all watches (one item per show)."""
     items = []
@@ -208,7 +279,7 @@ def dataset() -> list[dict]:
     return items
 
 
-@app.post("/api/v1/run-sync", dependencies=[api], tags=["results"])
+@app.post("/api/v1/run-sync", tags=["results"])
 async def run_sync(body: RunIn) -> dict:
     """One-shot check without creating a watch: resolve the movie, fetch, filter, return results."""
     ref = await resolve_movie(body.movie, body.city)
@@ -222,29 +293,29 @@ async def run_sync(body: RunIn) -> dict:
     return out
 
 
-@app.get("/api/v1/movies/search", dependencies=[api], tags=["movies"])
+@app.get("/api/v1/movies/search", tags=["movies"])
 async def search_movies(q: str, city: str = "chennai") -> list[dict]:
     s = db.get_settings()
     refs = await monitor.client.search_movies(city.lower(), q, headless=s["headless"] == "1")
     return [{**r.__dict__, "url": r.url} for r in refs]
 
 
-@app.get("/api/v1/events", dependencies=[api], tags=["activity"])
+@app.get("/api/v1/events", tags=["activity"])
 def events(limit: int = 100, watch_id: int | None = None) -> list[dict]:
     return db.list_events(min(limit, 500), watch_id)
 
 
-@app.get("/api/v1/stats", dependencies=[api], tags=["activity"])
+@app.get("/api/v1/stats", tags=["activity"])
 def stats() -> dict:
     return db.stats()
 
 
-@app.get("/api/v1/settings", dependencies=[api], tags=["settings"])
+@app.get("/api/v1/settings", tags=["settings"])
 def get_settings() -> dict:
     return public_settings()
 
 
-@app.put("/api/v1/settings", dependencies=[api], tags=["settings"])
+@app.put("/api/v1/settings", tags=["settings"])
 async def put_settings(body: SettingsIn) -> dict:
     vals: dict[str, str] = {}
     for k, v in body.model_dump(exclude_none=True).items():
@@ -255,13 +326,13 @@ async def put_settings(body: SettingsIn) -> dict:
     return public_settings()
 
 
-@app.post("/api/v1/notify/test", dependencies=[api], tags=["settings"])
+@app.post("/api/v1/notify/test", tags=["settings"])
 async def notify_test() -> dict:
     return await notify.send_all("🔔 BMS Monitor test", "Notifications are working.",
                                  "Notifications are working.", "https://in.bookmyshow.com")
 
 
-@app.post("/api/v1/telegram/detect-chat", dependencies=[api], tags=["settings"])
+@app.post("/api/v1/telegram/detect-chat", tags=["settings"])
 async def telegram_detect() -> list[dict]:
     tok = db.get_settings().get("telegram_bot_token", "")
     if not tok:
@@ -272,7 +343,7 @@ async def telegram_detect() -> list[dict]:
         raise HTTPException(502, f"Telegram error: {e}") from e
 
 
-@app.get("/api/v1/stream", dependencies=[api], tags=["activity"])
+@app.get("/api/v1/stream", tags=["activity"])
 async def stream(request: Request) -> StreamingResponse:
     """Server-sent events: watch updates, checks and alerts in real time."""
     q = notify.subscribe()

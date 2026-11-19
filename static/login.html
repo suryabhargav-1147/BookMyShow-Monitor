@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Sign in · BMS Monitor</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f8f9fc;--surface:#fff;--border:#e3e5ec;--border-strong:#cfd3de;--text:#1a1d29;--text-2:#4b5064;--text-3:#7a7f93;--accent:#2b5cff;--accent-hover:#1d47e0;--accent-soft:#eaf0ff;--bad:#c62d3c;--ok:#11845b}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1117;--surface:#171a23;--border:#2a2f3e;--border-strong:#3a4053;--text:#eceef4;--text-2:#b4b9c9;--text-3:#858b9e;--accent:#5b82ff;--accent-hover:#7896ff;--accent-soft:#1d2645;--bad:#ff6b78;--ok:#3ccf91}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--text);font:14px/1.5 Inter,system-ui,sans-serif;padding:16px}
+.card{width:100%;max-width:380px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:28px}
+.logo{width:48px;height:48px;border-radius:12px;background:linear-gradient(135deg,#ff3d5a,#c2185b);display:grid;place-items:center;font-size:24px;margin-bottom:14px}
+h1{font-size:20px;margin:0 0 4px;letter-spacing:-.01em} p{margin:0 0 18px;color:var(--text-2)}
+label{display:block;font-weight:600;margin:0 0 5px;font-size:13.5px}
+input{width:100%;padding:10px 12px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface);color:var(--text);font:inherit;font-size:15px;margin-bottom:14px}
+input:focus{outline:2px solid var(--accent-soft);border-color:var(--accent)}
+button{width:100%;padding:10px;border:0;border-radius:8px;background:var(--accent);color:#fff;font:inherit;font-weight:600;cursor:pointer}
+button:hover{background:var(--accent-hover)} button:disabled{opacity:.6;cursor:default}
+.hint{font-size:12.5px;color:var(--text-3);margin-top:14px}
+.msg{font-size:13px;margin:-4px 0 12px;min-height:18px} .msg.err{color:var(--bad)} .msg.ok{color:var(--ok)}
+a{color:var(--accent)} #step2{display:none}
+</style>
+</head>
+<body>
+<main class="card">
+  <div class="logo">🎟</div>
+  <h1>BMS Monitor</h1>
+  <p>Sign in with your Telegram account. Only allowed user IDs can get in.</p>
+  <form id="step1">
+    <label for="uid">Telegram user ID</label>
+    <input id="uid" inputmode="numeric" autocomplete="username" placeholder="e.g. 123456789" required>
+    <div class="msg" id="m1"></div>
+    <button id="b1">Send code to Telegram</button>
+  </form>
+  <form id="step2">
+    <label for="code">6-digit code from the bot</label>
+    <input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="••••••" required>
+    <div class="msg" id="m2"></div>
+    <button id="b2">Sign in</button>
+  </form>
+  <div class="hint">Faster: send <b>/web</b> to the bot for a one-tap sign-in link.<br>Don't know your ID? Message <a href="https://t.me/userinfobot" target="_blank" rel="noopener">@userinfobot</a>.</div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+try { $('uid').value = localStorage.getItem('bms-uid') || ''; } catch (e) {}
+async function post(url, body) {
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  return [r.ok, await r.json().catch(() => ({}))];
+}
+$('step1').onsubmit = async e => {
+  e.preventDefault(); const uid = $('uid').value.trim(); $('b1').disabled = true;
+  try { localStorage.setItem('bms-uid', uid); } catch (e) {}
+  const [, j] = await post('/auth/code', {user_id: uid});
+  $('m1').className = 'msg ok'; $('m1').textContent = j.message || 'Check Telegram.';
+  $('step2').style.display = 'block'; $('code').focus();
+  setTimeout(() => { $('b1').disabled = false; }, 30000);
+};
+$('step2').onsubmit = async e => {
+  e.preventDefault(); $('b2').disabled = true;
+  const [ok, j] = await post('/auth/verify', {user_id: $('uid').value.trim(), code: $('code').value.trim()});
+  if (ok) { location.href = '/'; return; }
+  $('m2').className = 'msg err'; $('m2').textContent = j.message || 'Sign-in failed.'; $('b2').disabled = false;
+};
+</script>
+</body>
+</html>
