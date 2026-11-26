@@ -1,9 +1,20 @@
 {
- "city": "chennai",
- "detail": "Cloudflare challenge: browser fetch HTTP 403 on 'Attention Required! | Cloudflare' (from GitHub's servers)",
+ "city": "hyderabad",
+ "detail": "Booking open in Hyderabad (3 venues) but nothing matches your filters yet",
  "event_code": "ET00439706",
- "movie": "Avengers Doomsday",
- "state": {},
- "status": "blocked",
- "theatre": "PVR Grand Mall Velachery"
+ "movie": "Avengers: Doomsday",
+ "state": {
+  "dates": {
+   "20261217": "BOOKABLE",
+   "20261218": "BOOKABLE",
+   "20261219": "BOOKABLE",
+   "20261220": "BOOKABLE",
+   "20261221": "NOT_OPEN",
+   "20261222": "NOT_OPEN",
+   "20261223": "NOT_OPEN"
+  },
+  "shows": {}
+ },
+ "status": "not_open",
+ "theatre": "ALLU Cinemas: Kokapet"
 }
