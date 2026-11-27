@@ -1,6 +1,6 @@
 {
  "city": "hyderabad",
- "detail": "Booking open in Hyderabad (3 venues) but nothing matches your filters yet",
+ "detail": "Cloudflare challenge: browser fetch HTTP 403 on 'Attention Required! | Cloudflare' (from GitHub's servers)",
  "event_code": "ET00439706",
  "movie": "Avengers: Doomsday",
  "state": {
@@ -15,6 +15,6 @@
   },
   "shows": {}
  },
- "status": "not_open",
+ "status": "blocked",
  "theatre": "ALLU Cinemas: Kokapet"
 }
